@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/JavaSelect.App/JavaSelect.App.csproj" />
+    <Project Path="src/JavaSelect.Core/JavaSelect.Core.csproj" />
+    <Project Path="src/JavaSelect.Repair/JavaSelect.Repair.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/JavaSelect.Core.Tests/JavaSelect.Core.Tests.csproj" />
+    <Project Path="tests/JavaSelect.Platform.Tests/JavaSelect.Platform.Tests.csproj" />
+  </Folder>
+</Solution>

@@ -1,0 +1,39 @@
+<Project>
+  <!-- WindowsAppSDK #6774: self-contained component packages omit this runtime resource. -->
+  <Target Name="IncludeWindowsAppSdkInsightsResource"
+          BeforeTargets="AssignTargetPaths"
+          DependsOnTargets="AddMicrosoftWindowsAppSDKPayloadFilesFromComponents"
+          Condition="'$(WindowsAppSDKSelfContained)' == 'true' and '$(DesignTimeBuild)' != 'true'">
+    <ItemGroup>
+      <_JavaSelectExistingInsights Include="@(MicrosoftWindowsAppSDKDllFiles);@(None);@(Content);@(ReferenceCopyLocalPaths)"
+                                  Condition="'%(Filename)%(Extension)' == 'Microsoft.WindowsAppRuntime.Insights.Resource.dll'" />
+    </ItemGroup>
+    <PropertyGroup Condition="'@(_JavaSelectExistingInsights)' == ''">
+      <_JavaSelectRuntimeVersion>$([System.IO.Path]::GetFileName('$(PkgMicrosoft_WindowsAppSDK_Runtime)'))</_JavaSelectRuntimeVersion>
+      <_JavaSelectInsightsDirectory>$(IntermediateOutputPath)WindowsAppSdkInsights\$(_JavaSelectRuntimeVersion)\</_JavaSelectInsightsDirectory>
+      <_JavaSelectInsightsResource>$(_JavaSelectInsightsDirectory)Microsoft.WindowsAppRuntime.Insights.Resource.dll</_JavaSelectInsightsResource>
+      <_JavaSelectRuntimeMsixDirectory>$(PkgMicrosoft_WindowsAppSDK_Runtime)\tools\MSIX\win10-$(NativePlatform)\</_JavaSelectRuntimeMsixDirectory>
+    </PropertyGroup>
+    <ItemGroup Condition="'@(_JavaSelectExistingInsights)' == ''">
+      <_JavaSelectRuntimeFramework Include="$(_JavaSelectRuntimeMsixDirectory)Microsoft.WindowsAppRuntime.*.msix"
+                                   Exclude="$(_JavaSelectRuntimeMsixDirectory)Microsoft.WindowsAppRuntime.DDLM.*.msix;$(_JavaSelectRuntimeMsixDirectory)Microsoft.WindowsAppRuntime.Main.*.msix;$(_JavaSelectRuntimeMsixDirectory)Microsoft.WindowsAppRuntime.Singleton.*.msix" />
+    </ItemGroup>
+    <Error Condition="'@(_JavaSelectExistingInsights)' == '' and '@(_JavaSelectRuntimeFramework->Count())' != '1'"
+           Text="Cannot locate the resolved Windows App SDK framework package for the notification resource." />
+    <Unzip Condition="'@(_JavaSelectExistingInsights)' == ''"
+           SourceFiles="@(_JavaSelectRuntimeFramework)"
+           DestinationFolder="$(_JavaSelectInsightsDirectory)"
+           Include="Microsoft.WindowsAppRuntime.Insights.Resource.dll"
+           SkipUnchangedFiles="true" />
+    <Error Condition="'@(_JavaSelectExistingInsights)' == '' and !Exists('$(_JavaSelectInsightsResource)')"
+           Text="The resolved Windows App SDK framework package is missing Microsoft.WindowsAppRuntime.Insights.Resource.dll." />
+    <ItemGroup Condition="'@(_JavaSelectExistingInsights)' == ''">
+      <None Include="$(_JavaSelectInsightsResource)"
+            Link="Microsoft.WindowsAppRuntime.Insights.Resource.dll"
+            TargetPath="Microsoft.WindowsAppRuntime.Insights.Resource.dll"
+            CopyToOutputDirectory="PreserveNewest"
+            CopyToPublishDirectory="PreserveNewest" />
+      <FileWrites Include="$(_JavaSelectInsightsResource)" />
+    </ItemGroup>
+  </Target>
+</Project>

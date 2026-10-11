@@ -1,0 +1,113 @@
+name: Build and release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Build version (x.y.z); manual runs only produce artifacts'
+        required: true
+        default: '0.1.0'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 35
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Resolve version
+        id: version
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
+        run: |
+          $version = if ($env:GITHUB_EVENT_NAME -eq 'push') { $env:GITHUB_REF_NAME.Substring(1) } else { $env:VERSION_INPUT }
+          if ($version -cnotmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') { throw 'Use a version such as 0.1.0, or a tag such as v0.1.0.' }
+          foreach ($part in $version.Split('.')) {
+            if ($part.Length -gt 5 -or [int]$part -gt 65535) { throw 'Version components must be between 0 and 65535.' }
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+      - name: Prepare installer compiler
+        run: |
+          $compiler = & ./build/Get-InnoSetup.ps1 -Destination (Join-Path $env:RUNNER_TEMP 'JavaSelect-InnoSetup')
+          "ISCC_PATH=$compiler" >> $env:GITHUB_ENV
+      - name: Test and package
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: ./build/package.ps1 -Version $env:RELEASE_VERSION -IsccPath $env:ISCC_PATH -Test
+      - name: Upload packages
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: JavaSelect-${{ steps.version.outputs.version }}-win-x64
+          path: |
+            artifacts/release/*-portable.zip
+            artifacts/release/*-setup.exe
+            artifacts/release/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: JavaSelect-${{ needs.build.outputs.version }}-win-x64
+          path: release
+      - name: Publish complete release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = "v$env:RELEASE_VERSION"
+          $files = @("JavaSelect-$env:RELEASE_VERSION-win-x64-portable.zip", "JavaSelect-$env:RELEASE_VERSION-win-x64-setup.exe", 'SHA256SUMS.txt')
+          foreach ($file in $files) { if (-not (Test-Path -LiteralPath "release/$file" -PathType Leaf)) { throw "Missing release asset: $file" } }
+          $checksums = @(Get-Content -LiteralPath release/SHA256SUMS.txt)
+          if ($checksums.Count -ne 2) { throw 'Expected checksums for exactly two packages.' }
+          foreach ($file in $files[0..1]) {
+            $actual = (Get-FileHash -LiteralPath "release/$file" -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ("$actual  $file" -cnotin $checksums) { throw "Checksum mismatch: $file" }
+          }
+          $existing = & gh release view $tag --json isDraft 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            if (-not ($existing | ConvertFrom-Json).isDraft) { throw "Release $tag is already published; use a new version tag." }
+          } else {
+            @'
+          - **Portable ZIP**: Extract the complete folder and run JavaSelect.exe.
+          - **Setup EXE**: Install for the current Windows user, with shortcuts and an uninstaller.
+          - Both packages include the .NET and Windows App SDK runtime files. Java installations are managed separately.
+          - SHA256SUMS.txt contains the package checksums.
+          '@ | Set-Content -LiteralPath release-notes.md -Encoding utf8
+            & gh release create $tag --verify-tag --draft --title "JavaSelect $tag" --generate-notes --notes-file release-notes.md
+            if ($LASTEXITCODE -ne 0) { throw 'Could not create the release draft.' }
+          }
+          & gh release upload $tag @($files | ForEach-Object { "release/$_" }) --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'Upload failed; the release remains a draft.' }
+          & gh release edit $tag --draft=false --latest
+          if ($LASTEXITCODE -ne 0) { throw 'Could not publish the completed release.' }
