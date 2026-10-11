@@ -1,0 +1,97 @@
+# JavaSelect 详细使用与构建指南
+
+[返回项目首页](../README.md)
+
+一款适用于 Windows 的 Java 版本管理工具，支持快速切换 Java 版本。由霄染开发，使用 C#、.NET 10 和原生 WinUI 3，界面遵循 Fluent Design，采用 [MIT 许可证](../LICENSE)。
+
+## 使用
+
+支持 Windows 10 2004（19041）及以上版本、Windows 11，当前目标架构为 x64。
+
+1. 在首页选择“自动扫描”，确认需要添加的 Java；也可“手动添加”安装目录，点击“扫描”识别有效版本后再添加。
+2. 在首页编辑版本别名、安装目录及“在启动台中显示”；修改安装目录后需要扫描验证。关闭显示后版本仍可在“切换 Java”页面使用，重新扫描会保留这一选择。搜索支持版本、别名和路径，厂商筛选只显示已发现的厂商。
+3. 按 **Alt+J** 打开居中的置顶浮窗，用 **↑ / ↓** 选择，按 **Enter** 或点击版本后立即收起浮窗，切换在后台完成，浮窗不显示加载动画；失败时打开主窗口显示原因。也可设置为方向键直接切换。按 Esc 或点击窗外关闭。
+
+全局快捷键需要 JavaSelect 进程在后台运行。关闭主窗口默认收起到托盘；从托盘退出后，快捷键随之停止。可设置开机自启动、启动时收起到托盘，以及每个 Java 版本的直达快捷键。
+
+首次运行按系统语言选择简体中文、繁體中文、English 或日本語，之后可在设置中手动修改。支持跟随系统、浅色和深色主题；浮窗可设置透明度、纯色或图片背景、文字颜色。“窗口圆角”滑块默认为 10 px，可在 0–40 px 之间调整，0 为直角，自动保存，下次打开浮窗生效。背景图片会复制到配置目录，更换后清理旧副本。
+
+“关于与更新”提供开发者信息、一言、GitHub 贡献者和更新检查。仓库尚未发布 Release 时显示“暂无正式发布版本”；网络或仓库访问失败会显示错误，不会当作“已是最新版本”。安装版发现新版本后可下载并校验安装器，确认后正常退出并启动覆盖升级；免安装版提供新版 ZIP 下载入口。
+
+操作提示在窗口右下角滑入并淡入，自动关闭时滑出并淡出；鼠标悬停或键盘正在操作提示内的按钮时暂停关闭，并遵循 Windows 的动画设置。只有主动扫描才显示扫描进度和数量，后台检查不会重复弹出相同的扫描结果。后台 Java 切换、恢复和新版本发现仍使用 Windows 系统通知。
+
+“通知”页可发送测试通知并打开 Windows 通知设置。系统关闭通知或通知发送失败时，程序会显示提示；勿扰模式可能让通知只进入通知中心。
+
+## 环境变量与终端
+
+- 常规切换修改当前用户的 `JAVA_HOME` 和受管理的用户 PATH 项。切换后建议完全关闭并重新打开终端；已运行的 CMD、PowerShell、IDE 和终端宿主不会自动继承新环境。
+- “自动同步终端环境”默认关闭，是测试功能。开启后会添加 PowerShell 配置集成并备份原有配置；只有已加载该集成的会话，才会在下一次显示提示符时同步 `JAVA_HOME`。它不刷新所有终端，也不修改会话 PATH，通常仍应重启终端。
+- Oracle 安装程序可能将 `Common Files\Oracle\Java\javapath` 或 `java8path` 放入系统 PATH，优先于用户 PATH。切换时遇到可识别的冲突会自动请求 Windows 管理员授权，修复成功后继续切换，不需要先点击“修复 PATH”。
+- PATH 修复只移除已识别的 Oracle 跳转路径或系统 `%JAVA_HOME%\bin` 冲突项，不删除或改写 Java 文件，不修改系统 `JAVA_HOME`，修改前保留备份。系统 PATH 的变化会影响其他 Windows 用户；无法识别的冲突仍需手动处理。取消授权或修复失败后，同一次运行期间相同的后台冲突不会反复弹窗，主动再次切换可重试。
+- “自动恢复上次选择”默认开启：启动或检测到环境变化后，尝试恢复上次成功切换的 Java，也会对可修复的 PATH 冲突请求管理员授权。恢复通知、切换通知和新 Java 提醒均可单独关闭。
+
+配置、图片副本和缓存位于 `%LOCALAPPDATA%\JavaSelect`，可从“常规”打开配置文件夹。管理员 PATH 修复的原始值备份位于 `%PROGRAMDATA%\JavaSelect\EnvironmentBackups`。移除列表项不会卸载 Java。
+
+## 构建与验证
+
+以下命令在仓库根目录运行。
+
+在 Windows 上安装系统级 **.NET SDK 10.0.401**（仓库 `global.json` 指定版本，可滚动到同系列更新补丁）。首次构建需要联网还原 NuGet 包；不需要项目内单独安装 SDK。
+
+```powershell
+.\build.ps1
+# 包含隔离回归测试
+.\build.ps1 -Test
+```
+
+发布目录中的 `JavaSelect.exe` 需要与同目录依赖、资源和修复组件一起保留，不能只复制单个 EXE。
+
+构建时可以指定版本和独立目录，例如 `./build.ps1 -Version 0.1.0 -OutputDirectory artifacts/local-build -Test`。应用内版本号、更新检查和安装包版本都使用同一个构建版本。
+
+## 发布包
+
+发布提供两种 Windows x64 下载，均包含 .NET 和 Windows App SDK 运行依赖：
+
+- `JavaSelect-0.1.0-win-x64-portable.zip`：免安装版，完整解压到一个文件夹，运行其中的 `JavaSelect.exe`。
+- `JavaSelect-0.1.0-win-x64-setup.exe`：安装版，默认安装到当前用户的 `%LOCALAPPDATA%\Programs\JavaSelect`，创建开始菜单入口，可选桌面快捷方式，支持原位升级和卸载。
+- `SHA256SUMS.txt`：以上两个文件的 SHA-256 校验值。
+
+两种版本都使用 `%LOCALAPPDATA%\JavaSelect` 保存配置。安装版不会附带 Java，也不会在安装或卸载时修改 Java 环境；卸载保留用户配置和已安装的 Java，只清理指向该安装目录的 JavaSelect 开机启动项。安装器会记住上次安装目录；覆盖升级或卸载时发现程序正在运行，会先询问是否正常关闭。旧版无法自动退出时会提示从托盘退出后重试。当前安装包尚未做代码签名。
+
+应用内升级只用于注册安装目录中运行的安装版。下载限于固定仓库的正式 Release，按发布记录校验文件大小与 SHA-256，安装前再次校验；下载或校验失败不会启动安装。下载完成后可选择稍后安装。免安装版仍需解压新版 ZIP。
+
+本地生成发布包需要 Inno Setup 7.0.2 或更新版本。可直接指定已安装的 `ISCC.exe`，也可以使用脚本下载固定的官方 7.1.0 版本、验证哈希与签名，并在构建目录以便携模式展开：
+
+```powershell
+$compiler = ./build/Get-InnoSetup.ps1 -Destination artifacts/inno-build-tool
+./build/package.ps1 -Version 0.1.0 -IsccPath $compiler -Test
+```
+
+输出位于 `artifacts/release`。脚本从独立暂存目录构建，排除测试配置、日志和调试符号，完成后清理暂存目录。已存在的同名发布文件不会被覆盖；再次打包可用 `-OutputDirectory artifacts/release-0.1.1` 指定新目录。打包工具不会放入用户下载包，也不需要随源码提交。
+
+## GitHub 自动构建与发布
+
+[Build and release](../.github/workflows/release.yml) 在每次推送到 `main` 时自动运行回归检查并生成 ZIP、安装 EXE 和校验文件。版本号取自 `Directory.Build.props`，在 GitHub **Actions → 对应运行 → Artifacts** 下载构建产物。
+
+推送 `v` 开头的正式版本标签还会自动发布 Release，例如：
+
+```powershell
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+先将源码与工作流提交、推送到仓库，再给对应提交打标签。版本格式固定为 `v主版本.次版本.修订号`，例如 `v0.1.0`；各段为 0–65535 的整数，不含前导零。标签中的版本会直接用于编译，无需再手工修改界面中的版本号。
+
+工作流在 Windows 上运行两组回归检查，构建 ZIP、安装 EXE 和校验文件。上传完成后才把 Release 草稿公开；上传失败时保留草稿，可重新运行失败任务。已经公开的版本不会被覆盖，应使用新的版本标签。流程使用仓库自带的 `GITHUB_TOKEN`，不需要配置个人访问令牌。
+
+也可在 GitHub **Actions → Build and release → Run workflow** 输入版本手动打包；手动运行只保存 Actions 产物，不创建正式 Release。Actions 产物保留 14 天，正式 Release 附件长期保留。应用的“检查更新”读取同一仓库最新的正式 Release。
+
+可以在程序目录执行只读环境测试：
+
+```powershell
+.\JavaSelect.exe --smoke
+```
+
+该模式使用程序目录下独立的 `smoke-config`，可扫描并检查界面；切换和 PATH 修复不会修改系统环境，也不会启用启动项或 PowerShell 集成。测试配置与缓存仍会写入这个独立目录。它不是完整的自动化 UI 测试，也不能证明管理员修复已在真实机器上执行成功。
+
+项目仓库：[xiaoranawa/javaselect](https://github.com/xiaoranawa/javaselect)。
