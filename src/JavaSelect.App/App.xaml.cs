@@ -37,6 +37,17 @@ public partial class App : Application
         try
         {
             var command = Environment.GetCommandLineArgs();
+            ElevationService.RestoreInstallerTemporaryDirectory();
+            if (NotificationHost.ShouldRun(command)) { await NotificationHost.RunAsync(command); Exit(); return; }
+            if (!await ElevationService.EnsureElevatedAsync(command)) { Exit(); return; }
+            if (command.Contains("--remove-startup"))
+            {
+                if (command.Contains("--smoke")) throw new ArgumentException("Startup changes are unavailable in smoke mode.");
+                await Task.Run(() => new StartupService().RemoveOwnedStartup(Environment.ProcessPath!));
+                NotificationShortcut.RemoveOwned(Environment.ProcessPath!);
+                Exit(); return;
+            }
+            var notificationAction = NotificationCommand.FromArguments(command);
             var smoke = command.Contains("--smoke");
             var directory = smoke ? Path.Combine(AppContext.BaseDirectory, "smoke-config") : null;
             var identity = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Environment.UserName + (directory ?? "JavaSelect"))))[..20];
@@ -50,7 +61,8 @@ public partial class App : Application
             if (!created)
             {
                 using var client = new NamedPipeClientStream(".", pipeName, PipeDirection.Out);
-                try { await client.ConnectAsync(2000); await client.WriteAsync("open"u8.ToArray()); }
+                var payload = notificationAction is { } action ? NotificationCommand.Encode(action) : "open";
+                try { await client.ConnectAsync(2000); await client.WriteAsync(Encoding.UTF8.GetBytes(payload)); }
                 catch (Exception error) when (error is IOException or TimeoutException) { }
                 Exit(); return;
             }
@@ -58,6 +70,7 @@ public partial class App : Application
             controller = new AppController(dispatcher, directory, smoke);
             await controller.InitializeAsync();
             main = new MainWindow(controller);
+            if (!string.IsNullOrEmpty(controller.Status)) controller.SetStatus(controller.Status);
             main.AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "icon.ico"));
             main.AppWindow.Resize(new SizeInt32(1120, 800));
             main.AppWindow.Closing += (_, closing) =>
@@ -87,14 +100,22 @@ public partial class App : Application
             CreateTray(dispatcher);
             controller.PreferencesChanged += (_, _) => CreateTray(dispatcher);
             _ = ListenAsync(pipeName, dispatcher);
+            if (notificationAction is { Action: "open" }
+                || (notificationAction is null && !command.Contains("--background") && !controller.Settings.StartInTray)
+                || tray is null) ShowMain();
             // Register only after notification actions can safely use the window and loaded caches.
-            var notificationLaunch = controller.StartNotifications();
-            if ((!notificationLaunch && !command.Contains("--background") && !controller.Settings.StartInTray) || tray is null) ShowMain();
+            await controller.StartNotificationsAsync();
+            if (quitting) return;
+            if (notificationAction is { } activation)
+            {
+                await controller.HandleNotificationActionAsync(new NotificationAction(activation.Action, activation.CandidateId));
+            }
             controller.StartMonitoring();
             if (smoke) await controller.ScanAsync();
         }
         catch (Exception error)
         {
+            Environment.ExitCode = 1;
             try { File.WriteAllText(Path.Combine(Path.GetTempPath(), "JavaSelect-startup.log"), error.ToString()); } catch { }
             MessageBox(0, "JavaSelect 无法启动。错误详情已保存到临时目录中的 JavaSelect-startup.log。", "JavaSelect", 0x10);
             Quit();
@@ -128,16 +149,23 @@ public partial class App : Application
                 await server.WaitForConnectionAsync(lifetime.Token);
                 using var deadline = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
                 deadline.CancelAfter(TimeSpan.FromSeconds(3));
-                var buffer = new byte[32]; var count = 0;
+                var buffer = new byte[256]; var count = 0;
                 while (count < buffer.Length)
                 {
                     var read = await server.ReadAsync(buffer.AsMemory(count), deadline.Token);
                     if (read == 0) break;
                     count += read;
                 }
+                if (count == buffer.Length) continue;
                 var command = Encoding.UTF8.GetString(buffer, 0, count);
                 if (command == "open") dispatcher.TryEnqueue(ShowMain);
                 else if (command == "quit-for-update") dispatcher.TryEnqueue(() => Quit());
+                else if (NotificationCommand.Decode(command) is { } action)
+                    dispatcher.TryEnqueue(async () =>
+                    {
+                        if (controller is null || quitting) return;
+                        await controller.HandleNotificationActionAsync(new NotificationAction(action.Action, action.CandidateId));
+                    });
             }
             catch (OperationCanceledException) { if (lifetime.IsCancellationRequested) return; }
             catch (IOException error) { controller?.ReportError(error); return; }

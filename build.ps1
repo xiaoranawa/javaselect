@@ -26,11 +26,41 @@ function Assert-OutputNotRunning([string]$Directory) {
     $prefix = $Directory.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
     foreach ($process in @(Get-Process -Name JavaSelect, JavaSelect.Repair -ErrorAction SilentlyContinue)) {
         try { $executable = $process.Path } catch { $executable = $null }
+        if (!$executable) { $executable = Get-ProcessImagePath $process.Id }
         if (!$executable) { throw 'Cannot inspect a running JavaSelect process. Close it before building, or use a separate machine.' }
         if ($executable.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
             throw "JavaSelect is running from $Directory. Close it or pass -OutputDirectory artifacts/another-build."
         }
     }
+}
+
+function Get-ProcessImagePath([int]$ProcessId) {
+    if (!('JavaSelect.BuildProcessQuery' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+namespace JavaSelect {
+    public static class BuildProcessQuery {
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern IntPtr OpenProcess(uint access, bool inherit, int id);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern bool QueryFullProcessImageName(IntPtr process, uint flags, StringBuilder image, ref uint size);
+        [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+        public static string GetImage(int id) {
+            var handle = OpenProcess(0x1000, false, id);
+            if (handle == IntPtr.Zero) return null;
+            try {
+                uint size = 32768;
+                var image = new StringBuilder((int)size);
+                return QueryFullProcessImageName(handle, 0, image, ref size) ? image.ToString() : null;
+            } finally { CloseHandle(handle); }
+        }
+    }
+}
+'@
+    }
+    [JavaSelect.BuildProcessQuery]::GetImage($ProcessId)
 }
 
 function Assert-OutputTree([string]$Path) {

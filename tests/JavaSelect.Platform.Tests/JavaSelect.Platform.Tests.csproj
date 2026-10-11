@@ -8,5 +8,9 @@
   <ItemGroup>
     <Compile Include="../../src/JavaSelect.App/Services/GlobalHotkeyService.cs" Link="GlobalHotkeyService.cs" />
     <Compile Include="../../src/JavaSelect.App/Services/TerminalIntegration.cs" Link="TerminalIntegration.cs" />
+    <Compile Include="../../src/JavaSelect.App/Services/ElevationService.cs" Link="ElevationService.cs" />
+    <Compile Include="../../src/JavaSelect.App/Services/StartupService.cs" Link="StartupService.cs" />
+    <Compile Include="../../src/JavaSelect.App/Services/NotificationCommand.cs" Link="NotificationCommand.cs" />
+    <Compile Include="../../src/JavaSelect.App/Services/NotificationShortcut.cs" Link="NotificationShortcut.cs" />
   </ItemGroup>
 </Project>

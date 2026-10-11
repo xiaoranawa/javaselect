@@ -22,6 +22,8 @@ void UpdateProfiles(bool enabled, string directory, params string[] profiles)
     catch (TargetInvocationException error) when (error.InnerException is not null) { ExceptionDispatchInfo.Capture(error.InnerException).Throw(); }
 }
 
+StartupServiceTests.Run(Check);
+NotificationShortcutTests.Run(Check);
 Check(GlobalHotkeyService.NormalizeShortcut("shift+ctrl+f23") == "Ctrl+Shift+F23", "Shortcut normalization");
 Throws<FormatException>(() => GlobalHotkeyService.NormalizeShortcut("J")); passed++;
 using (var first = new GlobalHotkeyService(_ => { }))

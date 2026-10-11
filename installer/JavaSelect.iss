@@ -102,6 +102,10 @@ english.CloseRunningAppFailed=JavaSelect could not be closed within 20 seconds. 
 chinesesimplified.CloseRunningAppFailed=未能在 20 秒内正常关闭 JavaSelect。请在通知区域的 JavaSelect 菜单中选择“退出”，然后重试。
 chinesetraditional.CloseRunningAppFailed=未能在 20 秒內正常關閉 JavaSelect。請在通知區域的 JavaSelect 選單中選擇「結束」，然後重試。
 japanese.CloseRunningAppFailed=20 秒以内に JavaSelect を正常に終了できませんでした。通知領域の JavaSelect メニューから「終了」を選び、再試行してください。
+english.RemoveStartupFailed=JavaSelect startup could not be removed. Allow administrator access or disable startup in JavaSelect, then retry.
+chinesesimplified.RemoveStartupFailed=未能清理 JavaSelect 开机启动。请允许管理员授权，或先在 JavaSelect 中关闭开机启动后重试。
+chinesetraditional.RemoveStartupFailed=無法清理 JavaSelect 開機啟動。請允許系統管理員授權，或先在 JavaSelect 中關閉開機啟動後重試。
+japanese.RemoveStartupFailed=JavaSelect の自動起動を削除できませんでした。管理者権限を許可するか、JavaSelect で自動起動を無効にしてから再試行してください。
 
 [Code]
 type
@@ -136,7 +140,7 @@ begin
     GetSHA256OfString(Utf8Encode(GetUserNameString + 'JavaSelect')), 1, 20));
 end;
 
-function RequestNormalExit(const Executable: String): Boolean;
+function RequestMaintenance(const Executable, Arguments: String): Boolean;
 var
   StartupInfo: TQuitStartupInfo;
   ProcessInfo: TQuitProcessInfo;
@@ -146,10 +150,12 @@ begin
   StartupInfo.cb := SizeOf(StartupInfo);
   StartupInfo.dwFlags := 1;
   StartupInfo.wShowWindow := SW_HIDE;
-  if CreateQuitProcess(Executable, '"' + Executable + '" --quit-for-update',
+  if CreateQuitProcess(Executable, '"' + Executable + '" ' + Arguments,
     0, 0, 0, $08000000, 0, ExtractFileDir(Executable), StartupInfo, ProcessInfo) = 0 then Exit;
   try
-    if WaitForQuitProcess(ProcessInfo.hProcess, 20000) <> 0 then Exit;
+    if Arguments = '--quit-for-update' then begin
+      if WaitForQuitProcess(ProcessInfo.hProcess, 20000) <> 0 then Exit;
+    end else if WaitForQuitProcess(ProcessInfo.hProcess, 120000) <> 0 then Exit;
     if GetQuitProcessExitCode(ProcessInfo.hProcess, ExitCode) = 0 then Exit;
     Result := ExitCode = 0;
   finally
@@ -184,7 +190,7 @@ begin
     Result := CustomMessage('CloseRunningApp');
     Exit;
   end;
-  if not RequestNormalExit(Executable) then begin
+  if not RequestMaintenance(Executable, '--quit-for-update') then begin
     Result := CustomMessage('CloseRunningAppFailed');
     Exit;
   end;
@@ -201,11 +207,20 @@ end;
 
 function InitializeUninstall: Boolean;
 var
-  Failure: String;
+  Failure, Executable, Arguments: String;
   Declined: Boolean;
 begin
   Failure := EnsureJavaSelectStopped(True, Declined);
   Result := Failure = '';
+  if Result then begin
+    Executable := ExpandConstant('{app}\JavaSelect.exe');
+    Arguments := '--remove-startup';
+    if UninstallSilent then Arguments := Arguments + ' --no-elevation';
+    if FileExists(Executable) and not RequestMaintenance(Executable, Arguments) then begin
+      Failure := CustomMessage('RemoveStartupFailed');
+      Result := False;
+    end;
+  end;
   if not Result then begin
     Log(Failure);
     if not UninstallSilent and not Declined then

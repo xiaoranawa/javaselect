@@ -6,9 +6,10 @@ using System.Text.Json;
 using JavaSelect.App.Services;
 using JavaSelect.Core;
 using Microsoft.UI.Dispatching;
+using Microsoft.Windows.AppNotifications;
 using Windows.Graphics.Imaging;
 using Windows.Storage;
-using Windows.Storage.Pickers;
+using Microsoft.Windows.Storage.Pickers;
 
 namespace JavaSelect.App;
 
@@ -25,7 +26,7 @@ public sealed partial class AppController : IDisposable
     private readonly HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
     private readonly PathRepairAttemptPolicy repairAttempts = new();
     private EnvironmentMonitor? monitor;
-    private bool startupApplied, terminalApplied, checkPending, disposed, overlayOpen, stopping;
+    private bool startupApplied, startupStateKnown, terminalApplied, checkPending, disposed, overlayOpen, stopping;
     private int queuedOperations;
     private AppSettings committedSettings = new();
     private IReadOnlyList<HotkeyBinding> appliedHotkeys = [];
@@ -67,26 +68,43 @@ public sealed partial class AppController : IDisposable
         store = new ConfigStore(directory); switcher = new EnvironmentSwitchService(store);
         community = new CommunityService(Path.Combine(store.DirectoryPath, "cache"));
         updater = new UpdateService(store.DirectoryPath); installedApplication = updater.GetInstallation();
-        notifications.ActionInvoked += (_, action) => dispatcher.TryEnqueue(async () =>
+        notifications.ActionInvoked += (_, action) => dispatcher.TryEnqueue(async () => await HandleNotificationActionAsync(action));
+    }
+
+    internal async Task HandleNotificationActionAsync(NotificationAction action)
+    {
+        if (stopping || !NotificationService.IsValidAction(action)) return;
+        try
         {
-            if (stopping) return;
-            try
-            {
-                if (action.Action == "open") { ShowMainRequested?.Invoke(this, EventArgs.Empty); return; }
-                var item = Candidates.FirstOrDefault(x => x.Id == action.CandidateId);
-                if (item is null) return;
-                if (action.Action == "add") await ImportCandidatesAsync([item.Id]);
-                else if (action.Action == "ignore") await RunOperationAsync(async () => { seen.Add(Signature(item)); await SaveSeenAsync(); });
-            }
-            catch (Exception error) { ReportError(error); }
-        });
+            if (action.Action == "open") { ShowMainRequested?.Invoke(this, EventArgs.Empty); return; }
+            var item = Candidates.FirstOrDefault(x => x.Id == action.CandidateId);
+            if (item is null) return;
+            if (action.Action == "add") await ImportCandidatesAsync([item.Id]);
+            else if (action.Action == "ignore") await RunOperationAsync(async () => { seen.Add(Signature(item)); await SaveSeenAsync(); });
+        }
+        catch (Exception error) { ReportError(error); }
     }
 
     public async Task InitializeAsync()
     {
         Settings = await store.LoadAsync(lifetime.Token);
         committedSettings = CloneSettings(Settings);
-        startupApplied = !IsReadOnly && new StartupService().IsEnabled(Environment.ProcessPath!);
+        if (!IsReadOnly)
+        {
+            try
+            {
+                var startup = new StartupService();
+                await Task.Run(() => startup.MigrateLegacyIfEnabled(Settings.StartAtLogin, Environment.ProcessPath!));
+                startupApplied = await Task.Run(() => startup.IsEnabled(Environment.ProcessPath!));
+                startupStateKnown = true;
+            }
+            catch (Exception error)
+            {
+                Log(error);
+                SetStatus(Text("无法检查开机启动，请启用 Windows 任务计划程序服务后重试。", "Could not check startup. Enable the Windows Task Scheduler service and retry.",
+                    "無法檢查開機啟動，請啟用 Windows 工作排程器服務後重試。", "自動起動を確認できません。Windows タスク スケジューラ サービスを有効にして再試行してください。"));
+            }
+        }
         terminalApplied = !IsReadOnly && File.Exists(Path.Combine(store.DirectoryPath, "terminal-sync.enabled"));
         var candidateFile = Path.Combine(store.DirectoryPath, "candidates.json");
         if (File.Exists(candidateFile))
@@ -101,10 +119,10 @@ public sealed partial class AppController : IDisposable
         }
     }
 
-    internal bool StartNotifications()
+    internal async Task<bool> StartNotificationsAsync()
     {
         if (IsReadOnly || stopping) return false;
-        try { notifications.Initialize(); return notifications.HandleLaunchActivation(); }
+        try { await notifications.InitializeAsync(); return notifications.HandleLaunchActivation(); }
         catch (Exception error) { Log(error); return false; }
     }
 
@@ -246,7 +264,7 @@ public sealed partial class AppController : IDisposable
             }
             SetStatus(Switched(java));
             if (!stopping && (recovery ? Settings.RestoreNotifications : !overlayOpen && Settings.SwitchNotifications && previous != id))
-                Notify(recovery ? Text("Java 环境已恢复", "Java environment restored", "Java 環境已還原", "Java 環境を復元") : "JavaSelect", Status);
+                await NotifyAsync(recovery ? Text("Java 环境已恢复", "Java environment restored", "Java 環境已還原", "Java 環境を復元") : "JavaSelect", Status);
             return true;
     }
 
@@ -296,10 +314,10 @@ public sealed partial class AppController : IDisposable
             {
                 await RegisterHotkeysAsync(bindings); appliedHotkeys = bindings; hotkeysChanged = true;
             }
-            if (!IsReadOnly && draft.StartAtLogin != startupApplied)
+            if (!IsReadOnly && (draft.StartAtLogin != committedSettings.StartAtLogin || startupStateKnown && draft.StartAtLogin != startupApplied))
             {
                 startupAttempted = true;
-                await Task.Run(() => new StartupService().SetEnabled(draft.StartAtLogin, Environment.ProcessPath!)); startupApplied = draft.StartAtLogin;
+                await Task.Run(() => new StartupService().SetEnabled(draft.StartAtLogin, Environment.ProcessPath!)); startupApplied = draft.StartAtLogin; startupStateKnown = true;
             }
             if (!IsReadOnly && draft.AutomaticTerminalSync != terminalApplied)
             {
@@ -327,7 +345,7 @@ public sealed partial class AppController : IDisposable
 
     public async Task<string?> PickBackgroundAsync(nint hwnd)
     {
-        var picker = new FileOpenPicker(); WinRT.Interop.InitializeWithWindow.Initialize(picker, hwnd);
+        var picker = new FileOpenPicker(Microsoft.UI.Win32Interop.GetWindowIdFromWindow(hwnd));
         foreach (var extension in new[] { ".png", ".jpg", ".jpeg", ".webp" }) picker.FileTypeFilter.Add(extension);
         var file = await picker.PickSingleFileAsync(); if (file is null) return null;
         return await RunOperationAsync(async () =>
@@ -363,7 +381,7 @@ public sealed partial class AppController : IDisposable
     {
         if (!stopping && overlayOpen && !IsReadOnly && Settings.SwitchNotifications && CurrentSelectedId != overlayInitial)
         {
-            var java = Settings.Installations.FirstOrDefault(x => x.Id == CurrentSelectedId); if (java is not null) Notify("JavaSelect", Switched(java));
+            var java = Settings.Installations.FirstOrDefault(x => x.Id == CurrentSelectedId); if (java is not null) _ = NotifyAsync("JavaSelect", Switched(java));
         }
         overlayOpen = false;
     }
@@ -454,7 +472,7 @@ public sealed partial class AppController : IDisposable
                 var baseline = File.Exists(Path.Combine(store.DirectoryPath, "seen.json"));
                 foreach (var java in Candidates)
                     if (seen.Add(Signature(java)) && baseline && committedSettings.DiscoveryNotifications && !stopping)
-                        Notify(Text("发现新的 Java", "New Java found", "發現新的 Java", "新しい Java を検出"), java.DisplayName + "\n" + java.Path, java.Id);
+                        await NotifyAsync(Text("发现新的 Java", "New Java found", "發現新的 Java", "新しい Java を検出"), java.DisplayName + "\n" + java.Path, java.Id);
                 await SaveSeenAsync();
             });
         }
@@ -600,41 +618,51 @@ public sealed partial class AppController : IDisposable
     }
     private static bool SamePath(string a, string b) => string.Equals(a.TrimEnd('\\', '/'), b.TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase);
     private static string Signature(JavaInstallation java) => java.Path.ToUpperInvariant() + "|" + java.Fingerprint;
-    private uint Notify(string title, string body, string? candidateId = null)
+    private async Task<uint> NotifyAsync(string title, string body, string? candidateId = null)
     {
         try
         {
-            var id = notifications.Show(title, body, candidateId, Text("添加", "Add", "新增", "追加"), Text("忽略", "Ignore", "忽略", "無視"));
-            if (id == 0) ShowNotificationWarning(Text("Windows 已关闭 JavaSelect 的通知，请在系统通知设置中开启。", "Windows has disabled JavaSelect notifications. Enable them in Windows notification settings.", "Windows 已關閉 JavaSelect 的通知，請在系統通知設定中開啟。", "Windows で JavaSelect の通知が無効です。システムの通知設定で有効にしてください。"));
+            var result = await notifications.ShowAsync(title, body, candidateId, Text("添加", "Add", "新增", "追加"), Text("忽略", "Ignore", "忽略", "無視"));
+            if (result.Id == 0)
+            {
+                LogMessage($"Notification unavailable: {result.Setting}; elevated={NotificationProcess.IsElevated()}; host={notifications.HostProcessId}");
+                ShowNotificationWarning(NotificationFailureText(result.Setting));
+            }
             else notificationWarningShown = false;
-            return id;
+            return result.Id;
         }
+        catch (OperationCanceledException) when (stopping) { return 0; }
         catch (Exception error)
         {
             Log(error);
-            ShowNotificationWarning(Text("系统通知发送失败，请重启 JavaSelect 后重试。", "Could not send the system notification. Restart JavaSelect and try again.", "系統通知傳送失敗，請重新啟動 JavaSelect 後重試。", "システム通知を送信できませんでした。JavaSelect を再起動して再試行してください。"));
+            ShowNotificationWarning(Text("通知服务连接或发送失败，请重新启动 JavaSelect 后重试。", "The notification service could not connect or send. Restart JavaSelect and try again.", "通知服務連線或傳送失敗，請重新啟動 JavaSelect 後重試。", "通知サービスに接続または送信できませんでした。JavaSelect を再起動して再試行してください。"));
             return 0;
         }
     }
+    private string NotificationFailureText(AppNotificationSetting setting) => setting switch
+    {
+        AppNotificationSetting.DisabledForApplication => Text("JavaSelect 的系统通知已关闭，请在 Windows 通知设置中开启。", "JavaSelect notifications are disabled. Enable them in Windows notification settings.", "JavaSelect 的系統通知已關閉，請在 Windows 通知設定中開啟。", "JavaSelect の通知が無効です。Windows の通知設定で有効にしてください。"),
+        AppNotificationSetting.DisabledForUser => Text("Windows 的通知总开关已关闭，请在系统设置中开启。", "Windows notifications are disabled globally. Enable them in system settings.", "Windows 的通知總開關已關閉，請在系統設定中開啟。", "Windows の通知が全体で無効です。システム設定で有効にしてください。"),
+        AppNotificationSetting.DisabledByGroupPolicy => Text("Windows 策略禁止发送通知，请联系系统管理员。", "Windows policy blocks notifications. Contact your administrator.", "Windows 原則禁止傳送通知，請聯絡系統管理員。", "Windows ポリシーで通知が禁止されています。管理者に連絡してください。"),
+        AppNotificationSetting.Unsupported => Text("当前运行方式不支持系统通知，请重新启动 JavaSelect 以连接通知服务。", "Notifications are unsupported in this process. Restart JavaSelect to reconnect its notification service.", "目前執行方式不支援系統通知，請重新啟動 JavaSelect 以連接通知服務。", "現在の実行方式では通知を使用できません。JavaSelect を再起動して通知サービスに接続してください。"),
+        _ => Text("系统通知注册不可用，请重新启动或重新安装 JavaSelect。", "Notification registration is unavailable. Restart or reinstall JavaSelect.", "系統通知註冊無法使用，請重新啟動或重新安裝 JavaSelect。", "通知の登録を利用できません。JavaSelect を再起動または再インストールしてください。")
+    };
     private void ShowNotificationWarning(string message)
     {
         if (notificationWarningShown || stopping) return;
         notificationWarningShown = true;
         SetStatus(message);
     }
-    public Task TestNotificationAsync()
+    public async Task TestNotificationAsync()
     {
-        if (IsReadOnly) { SetStatus(Text("预览模式不发送系统通知。", "System notifications are unavailable in preview mode.", "預覽模式不傳送系統通知。", "プレビューモードではシステム通知を送信しません。")); return Task.CompletedTask; }
+        if (IsReadOnly) { SetStatus(Text("预览模式不发送系统通知。", "System notifications are unavailable in preview mode.", "預覽模式不傳送系統通知。", "プレビューモードではシステム通知を送信しません。")); return; }
         notificationWarningShown = false;
-        try { notifications.Initialize(); }
-        catch (Exception error) { Log(error); }
-        var id = Notify("JavaSelect", Text("这是一条测试通知。点击可返回 JavaSelect。", "This is a test notification. Click to return to JavaSelect.", "這是一則測試通知。點擊可返回 JavaSelect。", "テスト通知です。クリックすると JavaSelect に戻ります。"));
+        var id = await NotifyAsync("JavaSelect", Text("这是一条测试通知。点击可返回 JavaSelect。", "This is a test notification. Click to return to JavaSelect.", "這是一則測試通知。點擊可返回 JavaSelect。", "テスト通知です。クリックすると JavaSelect に戻ります。"));
         if (id != 0)
         {
             LogMessage($"Test notification accepted by Windows: {id}");
             SetStatus(Text("测试通知已发送。若未看到，请检查 Windows 通知和勿扰模式。", "Test notification sent. If it is not visible, check Windows notifications and Do not disturb.", "測試通知已傳送。若未看到，請檢查 Windows 通知及勿擾模式。", "テスト通知を送信しました。表示されない場合は Windows の通知と応答不可モードを確認してください。"));
         }
-        return Task.CompletedTask;
     }
     public void OpenConfigurationFolder() => OpenLink(store.DirectoryPath);
     public void OpenEnvironmentSettings() => Process.Start(new ProcessStartInfo("rundll32.exe", "sysdm.cpl,EditEnvironmentVariables") { UseShellExecute = true });
@@ -654,6 +682,7 @@ public sealed partial class AppController : IDisposable
         if (monitor is not null) await Task.Run(monitor.Dispose);
         foreach (var task in new[] { environmentTask, retryTask, updatesTask, aboutTask, downloadUpdateTask, requestUpdateInstallTask }.OfType<Task>())
             try { await task; } catch (OperationCanceledException) { } catch (Exception error) { Log(error); }
+        await notifications.DisposeAsync();
     }
     public void Dispose()
     {

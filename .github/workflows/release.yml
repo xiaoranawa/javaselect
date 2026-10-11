@@ -9,7 +9,7 @@ on:
       version:
         description: 'Build version (x.y.z); manual runs only produce artifacts'
         required: true
-        default: '0.1.1'
+        default: '0.1.2'
         type: string
 
 permissions:
@@ -108,7 +108,7 @@ jobs:
           } else {
             @'
           - **Portable ZIP**: Extract the complete folder and run JavaSelect.exe.
-          - **Setup EXE**: Install for the current Windows user, with shortcuts and an uninstaller.
+          - **Setup EXE**: Installs for the current Windows account and remembers the previous installation folder.
           - Both packages include the .NET and Windows App SDK runtime files. Java installations are managed separately.
           - SHA256SUMS.txt contains the package checksums.
           '@ | Set-Content -LiteralPath release-notes.md -Encoding utf8

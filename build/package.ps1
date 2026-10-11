@@ -80,8 +80,10 @@ Assert-NoReparseAncestor $packageStage
 $null = New-Item -ItemType Directory -Path $packageStage
 $appStage = Join-Path $packageStage 'JavaSelect'
 $releaseStage = Join-Path $packageStage 'release'
+$installerStage = Join-Path $packageStage 'installer'
 try {
     $null = New-Item -ItemType Directory -Path $releaseStage
+    $null = New-Item -ItemType Directory -Path $installerStage
     & (Join-Path $repositoryRoot 'build.ps1') -Version $Version -OutputDirectory $appStage -Test:$Test
     $requiredFiles = @(
         'JavaSelect.exe', 'JavaSelect.Repair.exe', 'JavaSelect.dll', 'JavaSelect.runtimeconfig.json',
@@ -108,10 +110,12 @@ try {
     $zipPath = Join-Path $releaseStage $artifactNames[0]
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     [IO.Compression.ZipFile]::CreateFromDirectory($appStage, $zipPath, [IO.Compression.CompressionLevel]::Optimal, $false)
-    & $IsccPath '/Qp' "/DAppVersion=$Version" "/DAppSource=$appStage" "/DOutputDir=$releaseStage" $installerScript
+    & $IsccPath '/Qp' "/DAppVersion=$Version" "/DAppSource=$appStage" "/DOutputDir=$installerStage" $installerScript
     if ($LASTEXITCODE -ne 0) { throw 'Inno Setup compilation failed.' }
+    $payloadPath = Join-Path $installerStage $artifactNames[1]
+    if (!(Test-Path -LiteralPath $payloadPath -PathType Leaf) -or (Get-Item -LiteralPath $payloadPath).Length -eq 0) { throw 'Inno Setup did not create the expected installer.' }
     $setupPath = Join-Path $releaseStage $artifactNames[1]
-    if (!(Test-Path -LiteralPath $setupPath -PathType Leaf) -or (Get-Item -LiteralPath $setupPath).Length -eq 0) { throw 'Inno Setup did not create the expected installer.' }
+    & (Join-Path $PSScriptRoot 'Build-InstallerBootstrap.ps1') -PayloadPath $payloadPath -OutputPath $setupPath -Version $Version -Test:$Test
     $checksums = foreach ($name in $artifactNames[0..1]) {
         $hash = (Get-FileHash -LiteralPath (Join-Path $releaseStage $name) -Algorithm SHA256).Hash.ToLowerInvariant()
         "$hash  $name"

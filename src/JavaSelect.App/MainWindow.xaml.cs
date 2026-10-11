@@ -16,7 +16,7 @@ using Microsoft.UI.Xaml.Data;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Animation;
 using Microsoft.UI.Xaml.Media.Imaging;
-using Windows.Storage.Pickers;
+using Microsoft.Windows.Storage.Pickers;
 using Windows.UI.Core;
 using VirtualKey = Windows.System.VirtualKey;
 
@@ -311,8 +311,7 @@ public sealed partial class MainWindow : Window
         var scan = new Button { Content = IconText("\uE721", text["scanFolder"]), IsEnabled = false };
         var browse = ActionButton(text["browse"], async () =>
         {
-            var picker = new FolderPicker(); picker.FileTypeFilter.Add("*");
-            WinRT.Interop.InitializeWithWindow.Initialize(picker, WinRT.Interop.WindowNative.GetWindowHandle(this));
+            var picker = new FolderPicker(AppWindow.Id);
             var folder = await picker.PickSingleFolderAsync(); if (!closed && folder is not null) field.Text = folder.Path;
         });
         var actions = new WrapPanel(); actions.Children.Add(browse); actions.Children.Add(scan); actions.Children.Add(progress);
@@ -398,8 +397,7 @@ public sealed partial class MainWindow : Window
         var scan = new Button { Content = IconText("\uE721", text["scanFolder"]), IsEnabled = !string.IsNullOrWhiteSpace(originalPath) };
         var browse = ActionButton(text["browse"], async () =>
         {
-            var picker = new FolderPicker(); picker.FileTypeFilter.Add("*");
-            WinRT.Interop.InitializeWithWindow.Initialize(picker, WinRT.Interop.WindowNative.GetWindowHandle(this));
+            var picker = new FolderPicker(AppWindow.Id);
             var folder = await picker.PickSingleFolderAsync(); if (!closed && folder is not null) field.Text = folder.Path;
         });
         var actions = new WrapPanel(); actions.Children.Add(browse); actions.Children.Add(scan); actions.Children.Add(progress); actions.Children.Add(visibility);
