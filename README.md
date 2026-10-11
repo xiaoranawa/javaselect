@@ -32,6 +32,6 @@
 
 ## 关于
 
-由 **霄染** 开发，使用 C#、.NET 10 和原生 WinUI 3，采用 [MIT 许可证](LICENSE)。
+使用 C#、.NET 10 和原生 WinUI 3，采用 [MIT 许可证](LICENSE)。
 
 如果觉得好用，就给个 Star ⭐ 吧 QWQ

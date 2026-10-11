@@ -2,7 +2,7 @@
 
 [返回项目首页](../README.md)
 
-一款适用于 Windows 的 Java 版本管理工具，支持快速切换 Java 版本。由霄染开发，使用 C#、.NET 10 和原生 WinUI 3，界面遵循 Fluent Design，采用 [MIT 许可证](../LICENSE)。
+一款适用于 Windows 的 Java 版本管理工具，支持快速切换 Java 版本。使用 C#、.NET 10 和原生 WinUI 3，界面遵循 Fluent Design，采用 [MIT 许可证](../LICENSE)。
 
 ## 使用
 

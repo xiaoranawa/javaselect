@@ -32,6 +32,6 @@ See the [detailed guide (Chinese)](docs/guide.zh-CN.md) for configuration, envir
 
 ## About
 
-Developed by **霄染**, built with C#, .NET 10, and native WinUI 3. Licensed under [MIT](LICENSE).
+Built with C#, .NET 10, and native WinUI 3. Licensed under [MIT](LICENSE).
 
 If JavaSelect helps you, leave a Star ⭐ QWQ

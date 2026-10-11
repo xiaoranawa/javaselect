@@ -32,4 +32,4 @@
 
 更多用法與建置說明請見[詳細文件（簡體中文）](docs/guide.zh-CN.md)。
 
-開發者：**霄染** · [MIT 授權條款](LICENSE)
+[MIT 授權條款](LICENSE)
