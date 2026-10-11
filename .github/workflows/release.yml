@@ -2,6 +2,7 @@ name: Build and release
 
 on:
   push:
+    branches: ['main']
     tags: ['v*']
   workflow_dispatch:
     inputs:
@@ -36,7 +37,14 @@ jobs:
         env:
           VERSION_INPUT: ${{ inputs.version }}
         run: |
-          $version = if ($env:GITHUB_EVENT_NAME -eq 'push') { $env:GITHUB_REF_NAME.Substring(1) } else { $env:VERSION_INPUT }
+          $version = if ($env:GITHUB_EVENT_NAME -eq 'push' -and $env:GITHUB_REF_TYPE -eq 'tag') {
+            $env:GITHUB_REF_NAME.Substring(1)
+          } elseif ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch') {
+            $env:VERSION_INPUT
+          } else {
+            [xml]$properties = Get-Content -LiteralPath 'Directory.Build.props' -Raw
+            $properties.SelectSingleNode('/Project/PropertyGroup/Version').InnerText
+          }
           if ($version -cnotmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') { throw 'Use a version such as 0.1.0, or a tag such as v0.1.0.' }
           foreach ($part in $version.Split('.')) {
             if ($part.Length -gt 5 -or [int]$part -gt 65535) { throw 'Version components must be between 0 and 65535.' }

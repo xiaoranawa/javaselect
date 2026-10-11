@@ -65,9 +65,11 @@ $compiler = ./build/Get-InnoSetup.ps1 -Destination artifacts/inno-build-tool
 
 输出位于 `artifacts/release`。脚本从独立暂存目录构建，排除测试配置、日志和调试符号，完成后清理暂存目录。已存在的同名发布文件不会被覆盖；再次打包可用 `-OutputDirectory artifacts/release-0.1.1` 指定新目录。打包工具不会放入用户下载包，也不需要随源码提交。
 
-## GitHub 自动发布
+## GitHub 自动构建与发布
 
-[Build and release](.github/workflows/release.yml) 在推送 `v` 开头的正式版本标签时运行，例如：
+[Build and release](.github/workflows/release.yml) 在每次推送到 `main` 时自动运行回归检查并生成 ZIP、安装 EXE 和校验文件。版本号取自 `Directory.Build.props`，在 GitHub **Actions → 对应运行 → Artifacts** 下载构建产物。
+
+推送 `v` 开头的正式版本标签还会自动发布 Release，例如：
 
 ```powershell
 git tag v0.1.0
