@@ -104,7 +104,8 @@
             </StackPanel>
         </Grid>
         <NavigationView x:Name="Navigation" Grid.Row="1" IsBackButtonVisible="Collapsed" IsSettingsVisible="False"
-            PaneDisplayMode="Left" OpenPaneLength="206" CompactPaneLength="48" IsPaneToggleButtonVisible="False"
+            PaneDisplayMode="Auto" CompactModeThresholdWidth="0" ExpandedModeThresholdWidth="960"
+            OpenPaneLength="206" CompactPaneLength="48" IsPaneToggleButtonVisible="False"
             AlwaysShowHeader="False" Background="Transparent" PaneTitle="" SelectionChanged="NavigationChanged">
             <Border Margin="0,0,12,12" CornerRadius="12" Background="{ThemeResource ContentSurfaceBrush}"
                 BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">

@@ -10,6 +10,7 @@ using Microsoft.UI.Text;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
+using Microsoft.UI.Xaml.Automation.Peers;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Data;
@@ -38,7 +39,8 @@ public sealed partial class MainWindow : Window
     private TextBlock? pagerLabel;
     private Button? previousPage, nextPage, checkUpdatesButton, downloadUpdateButton;
     private FrameworkElement? downloadUpdateAction;
-    private TextBlock? downloadPercentage;
+    private TextBlock? downloadPercentage, downloadUpdateLabel;
+    private ProgressBar? downloadProgressBar;
     private ProgressRing? scanProgress, updateProgress, quoteProgress, contributorProgress, downloadProgress;
     private int shortcutPage;
     private Microsoft.UI.Dispatching.DispatcherQueueTimer? appearanceSave;
@@ -80,7 +82,6 @@ public sealed partial class MainWindow : Window
             && RootGrid.XamlRoot is not null && Microsoft.UI.Xaml.Input.FocusManager.GetFocusedElement(RootGrid.XamlRoot) is TextBox { Tag: "HotkeyRecorder" };
         RootGrid.SizeChanged += (_, _) =>
         {
-            Navigation.PaneDisplayMode = RootGrid.ActualWidth < 960 ? NavigationViewPaneDisplayMode.LeftCompact : NavigationViewPaneDisplayMode.Left;
             StatusBar.MaxWidth = Math.Max(0, RootGrid.ActualWidth - 48);
         };
         BuildNavigation(); ApplyTheme(); Navigate("home");
@@ -129,7 +130,8 @@ public sealed partial class MainWindow : Window
         pages.Clear(); lists.Clear(); currentName = currentHome = currentExecutable = quote = quoteSource = updateStatus = null;
         shortcutRows = contributorList = null; currentIcon = null; releaseLink = null;
         scanProgress = updateProgress = quoteProgress = contributorProgress = downloadProgress = null;
-        checkUpdatesButton = downloadUpdateButton = null; downloadUpdateAction = null; downloadPercentage = null;
+        checkUpdatesButton = downloadUpdateButton = null; downloadUpdateAction = null; downloadPercentage = downloadUpdateLabel = null;
+        downloadProgressBar = null;
         BuildNavigation(); Navigate(currentPage);
     }
     private void ApplyTheme()
@@ -250,13 +252,22 @@ public sealed partial class MainWindow : Window
         if (downloadUpdateButton is not null)
         {
             var label = text[controller.IsUpdateReadyToInstall ? "installUpdate" : "downloadAndInstall"];
-            if (!Equals(downloadUpdateButton.Tag, label)) { downloadUpdateButton.Tag = label; downloadUpdateButton.Content = IconText("\uE896", label); }
+            if (downloadUpdateLabel is not null) downloadUpdateLabel.Text = label;
+            AutomationProperties.SetName(downloadUpdateButton, label);
             downloadUpdateButton.IsEnabled = controller.CanDownloadUpdate && !controller.IsCheckingUpdates && !controller.IsDownloadingUpdate && !updateInstallFlowActive;
         }
         if (downloadPercentage is not null)
         {
-            downloadPercentage.Text = controller.UpdateDownloadProgress is { } value ? $"{value:0}%" : "";
-            downloadPercentage.Visibility = controller.IsDownloadingUpdate && controller.UpdateDownloadProgress is not null ? Visibility.Visible : Visibility.Collapsed;
+            downloadPercentage.Text = controller.UpdateDownloadProgress is { } value ? $"{text["downloadingUpdate"]} {value:0}%" : text["downloadingUpdate"];
+            downloadPercentage.Opacity = controller.IsDownloadingUpdate ? 1 : 0;
+            if (downloadUpdateLabel is not null) downloadUpdateLabel.Opacity = controller.IsDownloadingUpdate ? 0 : 1;
+        }
+        if (downloadProgressBar is not null)
+        {
+            downloadProgressBar.Visibility = controller.CanDownloadUpdate ? Visibility.Visible : Visibility.Collapsed;
+            downloadProgressBar.Opacity = controller.IsDownloadingUpdate || controller.IsUpdateReadyToInstall ? 1 : 0;
+            downloadProgressBar.IsIndeterminate = controller.IsDownloadingUpdate && controller.UpdateDownloadProgress is null;
+            downloadProgressBar.Value = controller.IsUpdateReadyToInstall ? 100 : controller.UpdateDownloadProgress ?? 0;
         }
         if (updateStatus is not null) { updateStatus.Text = controller.UpdateStatus; updateStatus.Visibility = string.IsNullOrEmpty(controller.UpdateStatus) ? Visibility.Collapsed : Visibility.Visible; }
         if (releaseLink is not null)
@@ -748,33 +759,53 @@ public sealed partial class MainWindow : Window
             PageScroll.SizeChanged -= CardsViewportSizeChanged; PageScroll.ViewChanged -= CardsViewportChanged;
         };
         page.Children.Add(aboutCards);
-        static Grid ProgressAction(ProgressRing progress, Button button, TextBlock? percentage = null)
+        Button ProgressAction(ProgressRing progress, Button button, TextBlock? percentage = null)
         {
-            var row = new Grid { MinHeight = 32, VerticalAlignment = VerticalAlignment.Center };
-            row.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-            row.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-            progress.Margin = new Thickness(0, 0, 8, 0);
+            var original = (StackPanel)button.Content;
+            var icon = (FrameworkElement)original.Children[0];
+            var label = (TextBlock)original.Children[1];
+            AutomationProperties.SetName(button, label.Text);
+            original.Children.Clear();
+            var content = new Grid { ColumnSpacing = 8 };
+            content.ColumnDefinitions.Add(new() { Width = new GridLength(20) });
+            content.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+            var iconSlot = new Grid { Width = 20, Height = 20 };
+            iconSlot.Children.Add(icon); iconSlot.Children.Add(progress);
+            progress.SetBinding(Control.ForegroundProperty, new Binding { Source = button, Path = new PropertyPath("Foreground") });
+            progress.RegisterPropertyChangedCallback(ProgressRing.IsActiveProperty, (_, _) => icon.Opacity = progress.IsActive ? 0 : 1);
+            content.Children.Add(iconSlot);
+            var labelSlot = new Grid(); Grid.SetColumn(labelSlot, 1); content.Children.Add(labelSlot);
+            label.TextWrapping = TextWrapping.NoWrap; labelSlot.Children.Add(label);
             button.VerticalAlignment = VerticalAlignment.Center;
-            row.Children.Add(progress);
             if (percentage is not null)
             {
-                row.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-                percentage.Margin = new Thickness(0, 0, 8, 0); percentage.VerticalAlignment = VerticalAlignment.Center;
-                Grid.SetColumn(percentage, 1); row.Children.Add(percentage);
+                // Reserve every state so localized labels cannot move the action group.
+                foreach (var caption in new[] { text["downloadAndInstall"], text["installUpdate"], text["downloadingUpdate"] + " 100%" })
+                {
+                    var reservation = Label(caption);
+                    reservation.TextWrapping = TextWrapping.NoWrap; reservation.Opacity = 0; reservation.IsHitTestVisible = false;
+                    AutomationProperties.SetAccessibilityView(reservation, AccessibilityView.Raw);
+                    labelSlot.Children.Add(reservation);
+                }
+                percentage.TextWrapping = TextWrapping.NoWrap; percentage.Opacity = 0;
+                labelSlot.Children.Add(percentage);
+                downloadUpdateLabel = label;
             }
-            Grid.SetColumn(button, percentage is null ? 1 : 2); row.Children.Add(button);
-            return row;
+            button.Content = content;
+            return button;
         }
         updateStatus = Secondary(controller.UpdateStatus); releaseLink = Link(text["viewGitHub"], RepositoryUrl + "/releases");
         updateProgress = Progress(text["checkingUpdates"]);
         checkUpdatesButton = ActionButton(text["checkUpdates"], controller.CheckUpdatesAsync, "\uE895");
         downloadUpdateButton = ActionButton(text["downloadAndInstall"], DownloadAndInstallUpdate, "\uE896", true);
-        downloadProgress = Progress(text["downloadingUpdate"]); downloadPercentage = Secondary("");
+        downloadProgress = Progress(text["downloadingUpdate"]); downloadPercentage = Label("");
         downloadUpdateAction = ProgressAction(downloadProgress, downloadUpdateButton, downloadPercentage);
-        var updateActions = new WrapPanel { VerticalAlignment = VerticalAlignment.Center };
+        var updateActions = new WrapPanel { VerticalAlignment = VerticalAlignment.Top };
         updateActions.Children.Add(ProgressAction(updateProgress, checkUpdatesButton)); updateActions.Children.Add(downloadUpdateAction);
+        downloadProgressBar = new ProgressBar { Minimum = 0, Maximum = 100, Height = 4, HorizontalAlignment = HorizontalAlignment.Stretch };
+        AutomationProperties.SetName(downloadProgressBar, text["downloadingUpdate"]);
         page.Children.Add(Section(text["updates"]));
-        page.Children.Add(Group(Pair(Stack(5, Label(text["updates"]), updateStatus, releaseLink), updateActions, 640), Toggle("autoUpdate", controller.Settings.AutoUpdate, v => controller.Settings.AutoUpdate = v)));
+        page.Children.Add(Group(Stack(12, Pair(Label(text["updates"]), updateActions, 640), downloadProgressBar, updateStatus, releaseLink), Toggle("autoUpdate", controller.Settings.AutoUpdate, v => controller.Settings.AutoUpdate = v)));
         contributorList = Stack(10); contributorProgress = Progress(text["loadingContributors"]);
         var contributorsLink = Link(text["viewGitHub"], RepositoryUrl + "/graphs/contributors");
         contributorsLink.MinHeight = 32; contributorsLink.VerticalAlignment = VerticalAlignment.Center;
