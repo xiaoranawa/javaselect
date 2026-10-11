@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using JavaSelect.Core;
+using JavaSelect.App.Services;
 
 if (args.Contains("-version"))
 {
@@ -155,6 +156,260 @@ try
             Equal(expected, settings.OverlayCornerRadius);
             Equal(expected, (await store.LoadAsync()).OverlayCornerRadius);
         }
+    });
+    await Check("Optional launcher appearance starts disabled in new and existing configurations", async () =>
+    {
+        void CheckDefaults(AppSettings settings)
+        {
+            True(!settings.OverlayImageBlurEnabled); Equal(5d, settings.OverlayImageBlur);
+            True(!settings.OverlayTextBackground); Equal("frosted", settings.OverlayBackgroundStyle);
+            True(settings.OverlayImagePath is null);
+        }
+        CheckDefaults(new AppSettings());
+        var store = Store("image-blur-default"); CheckDefaults(await store.LoadAsync());
+        await File.WriteAllTextAsync(store.FilePath, """{"OverlayOpacity":72,"OverlayCornerRadius":18}""");
+        var loaded = await store.LoadAsync();
+        CheckDefaults(loaded); Equal(72d, loaded.OverlayOpacity); Equal(18d, loaded.OverlayCornerRadius);
+        loaded.OverlayImageBlur = 0; await store.SaveAsync(loaded);
+        Equal(0d, (await store.LoadAsync()).OverlayImageBlur);
+    });
+    await Check("Image blur enablement persists without resetting its configured strength", async () =>
+    {
+        var store = Store("image-blur-toggle"); var settings = await store.LoadAsync();
+        settings.OverlayImageBlurEnabled = true; await store.SaveAsync(settings);
+        var loaded = await store.LoadAsync(); True(loaded.OverlayImageBlurEnabled); Equal(5d, loaded.OverlayImageBlur);
+        loaded.OverlayImageBlur = 12.5; loaded.OverlayImageBlurEnabled = false; await store.SaveAsync(loaded);
+        loaded = await store.LoadAsync(); True(!loaded.OverlayImageBlurEnabled); Equal(12.5, loaded.OverlayImageBlur);
+        loaded.OverlayImageBlurEnabled = true; await store.SaveAsync(loaded);
+        loaded = await store.LoadAsync(); True(loaded.OverlayImageBlurEnabled); Equal(12.5, loaded.OverlayImageBlur);
+    });
+    await Check("Legacy image blur preserves only explicitly configured image effects", async () =>
+    {
+        var store = Store("image-blur-legacy"); await store.LoadAsync();
+        var directory = Path.Combine(store.DirectoryPath, "backgrounds"); Directory.CreateDirectory(directory);
+        var imagePath = Path.Combine(directory, "background-" + Guid.NewGuid().ToString("N") + ".png");
+        await File.WriteAllBytesAsync(imagePath, png);
+        foreach (var (style, strength, enabled) in new (string, double?, bool)[]
+        {
+            ("image", 5, true), ("image", 12.5, true), ("image", 99, true),
+            ("image", 0, false), ("image", -1, false), ("image", null, false),
+            ("frosted", 5, false), ("solid", 5, false)
+        })
+        {
+            var document = new Dictionary<string, object?> { ["OverlayBackgroundStyle"] = style, ["OverlayImagePath"] = imagePath };
+            if (strength is { } value) document["overlayimageblur"] = value;
+            await File.WriteAllTextAsync(store.FilePath, JsonSerializer.Serialize(document));
+            var loaded = await store.LoadAsync(); Equal(enabled, loaded.OverlayImageBlurEnabled);
+            Equal(strength is { } radius ? Math.Clamp(radius, 0, 30) : 5, loaded.OverlayImageBlur);
+            await store.SaveAsync(loaded); Equal(enabled, (await store.LoadAsync()).OverlayImageBlurEnabled);
+        }
+        await File.WriteAllTextAsync(store.FilePath, JsonSerializer.Serialize(new
+        {
+            OverlayBackgroundStyle = "image", OverlayImagePath = imagePath, OverlayImageBlur = 5, overlayimageblurenabled = false
+        }));
+        var explicitChoice = await store.LoadAsync(); True(!explicitChoice.OverlayImageBlurEnabled);
+        await store.SaveAsync(explicitChoice); True(!(await store.LoadAsync()).OverlayImageBlurEnabled);
+    });
+    await Check("Image blur persists and normalizes bounds independently of background mode", async () =>
+    {
+        var store = Store("image-blur-bounds");
+        foreach (var (value, expected) in new[] { (-1d, 0d), (0d, 0d), (12.5, 12.5), (30d, 30d), (31d, 30d), (double.NaN, 5d), (double.PositiveInfinity, 5d), (double.NegativeInfinity, 5d) })
+        {
+            var settings = new AppSettings { OverlayImageBlur = value, OverlayBackgroundStyle = "solid" };
+            await store.SaveAsync(settings);
+            Equal(expected, settings.OverlayImageBlur); Equal(expected, (await store.LoadAsync()).OverlayImageBlur);
+        }
+    });
+    await Check("Image blur zero preserves pixels and clamped edges preserve uniform color", () =>
+    {
+        var original = Enumerable.Range(0, 12).SelectMany(_ => new byte[] { 12, 38, 70, 125 }).ToArray();
+        var pixels = original.ToArray();
+        LauncherBackgroundPixels.Blur(pixels, 4, 3, 0, default); True(original.SequenceEqual(pixels));
+        LauncherBackgroundPixels.Blur(pixels, 4, 3, 30, default); True(original.SequenceEqual(pixels));
+        byte[] single = [9, 22, 48, 72]; LauncherBackgroundPixels.Blur(single, 1, 1, 120, default);
+        True(single.SequenceEqual(new byte[] { 9, 22, 48, 72 }));
+        return Task.CompletedTask;
+    });
+    await Check("Image blur softens edges symmetrically and preserves premultiplied alpha", () =>
+    {
+        const int width = 101;
+        var pixels = new byte[width * 4];
+        for (var x = 30; x <= 70; x++) { pixels[x * 4] = 64; pixels[x * 4 + 1] = 100; pixels[x * 4 + 2] = 128; pixels[x * 4 + 3] = 128; }
+        var moreBlurred = pixels.ToArray();
+        LauncherBackgroundPixels.Blur(pixels, width, 1, 3, default);
+        LauncherBackgroundPixels.Blur(moreBlurred, width, 1, 15, default);
+        True(pixels[29 * 4 + 3] > 0 && pixels[30 * 4 + 3] < 128);
+        True(moreBlurred[20 * 4 + 3] > pixels[20 * 4 + 3]);
+        for (var x = 0; x < width; x++) for (var c = 0; c < 4; c++)
+        {
+            Equal(pixels[x * 4 + c], pixels[(width - 1 - x) * 4 + c]);
+            True(pixels[x * 4 + c] <= pixels[x * 4 + 3]);
+        }
+        return Task.CompletedTask;
+    });
+    await Check("Background resize interpolates colors without stretching edge transparency", () =>
+    {
+        byte[] source = [0, 0, 0, 255, 0, 0, 255, 255, 0, 255, 0, 255, 255, 0, 0, 255];
+        var resized = LauncherBackgroundPixels.Resize(source, 2, 2, 3, 3, default);
+        Equal(36, resized.Length); Equal((byte)64, resized[16]); Equal((byte)64, resized[17]); Equal((byte)64, resized[18]);
+        for (var x = 3; x < resized.Length; x += 4) Equal((byte)255, resized[x]);
+        True(resized.AsSpan(0, 4).SequenceEqual(source.AsSpan(0, 4)));
+        True(resized.AsSpan(32, 4).SequenceEqual(source.AsSpan(12, 4)));
+        return Task.CompletedTask;
+    });
+    await Check("Canceled background rendering stops before processing pixels", async () =>
+    {
+        using var cancellation = new CancellationTokenSource(); cancellation.Cancel();
+        await Throws<OperationCanceledException>(() => { LauncherBackgroundPixels.Blur(new byte[16], 2, 2, 5, cancellation.Token); return Task.CompletedTask; });
+        await Throws<OperationCanceledException>(() => { LauncherBackgroundPixels.Resize(new byte[16], 2, 2, 3, 3, cancellation.Token); return Task.CompletedTask; });
+    });
+    await Check("Text background defaults also apply to existing configurations", async () =>
+    {
+        var defaults = new AppSettings();
+        True(!defaults.OverlayTextBackground);
+        Equal("#FFFFFF", defaults.OverlayTextBackgroundColor); Equal(100d, defaults.OverlayTextBackgroundOpacity); Equal(10d, defaults.OverlayTextBackgroundCornerRadius);
+        var store = Store("text-background-legacy"); await store.LoadAsync();
+        await File.WriteAllTextAsync(store.FilePath, """{"SchemaVersion":1,"OverlayTextBackground":true,"OverlayOpacity":56,"OverlayCornerRadius":24}""");
+        var loaded = await store.LoadAsync();
+        True(loaded.OverlayTextBackground); Equal("#FFFFFF", loaded.OverlayTextBackgroundColor); Equal(100d, loaded.OverlayTextBackgroundOpacity); Equal(10d, loaded.OverlayTextBackgroundCornerRadius);
+        Equal(56d, loaded.OverlayOpacity); Equal(24d, loaded.OverlayCornerRadius);
+    });
+    await Check("Text background appearance persists independently while disabled", async () =>
+    {
+        var store = Store("text-background-persistence");
+        var settings = new AppSettings
+        {
+            OverlayTextBackground = true, OverlayTextBackgroundColor = "#123aBC", OverlayTextBackgroundOpacity = 37.5, OverlayTextBackgroundCornerRadius = 6.5,
+            OverlaySolidColor = "#FEDCBA", OverlayOpacity = 81, OverlayCornerRadius = 28, OverlayTextColor = "black"
+        };
+        await store.SaveAsync(settings);
+        var loaded = await store.LoadAsync();
+        True(loaded.OverlayTextBackground);
+        loaded.OverlayTextBackground = false; await store.SaveAsync(loaded); loaded = await store.LoadAsync();
+        True(!loaded.OverlayTextBackground); Equal("#123aBC", loaded.OverlayTextBackgroundColor); Equal(37.5, loaded.OverlayTextBackgroundOpacity); Equal(6.5, loaded.OverlayTextBackgroundCornerRadius);
+        Equal("#FEDCBA", loaded.OverlaySolidColor); Equal(81d, loaded.OverlayOpacity); Equal(28d, loaded.OverlayCornerRadius); Equal("black", loaded.OverlayTextColor);
+    });
+    await Check("Text background opacity and radius normalize invalid values and preserve endpoints", async () =>
+    {
+        var store = Store("text-background-bounds");
+        foreach (var (opacity, radius, expectedOpacity, expectedRadius) in new[]
+        {
+            (-1d, -1d, 0d, 0d), (0d, 0d, 0d, 0d), (100d, 40d, 100d, 40d), (101d, 41d, 100d, 40d),
+            (double.NaN, double.NaN, 100d, 10d), (double.PositiveInfinity, double.PositiveInfinity, 100d, 10d), (double.NegativeInfinity, double.NegativeInfinity, 100d, 10d)
+        })
+        {
+            var settings = new AppSettings { OverlayTextBackgroundOpacity = opacity, OverlayTextBackgroundCornerRadius = radius };
+            await store.SaveAsync(settings);
+            Equal(expectedOpacity, settings.OverlayTextBackgroundOpacity); Equal(expectedRadius, settings.OverlayTextBackgroundCornerRadius);
+            var loaded = await store.LoadAsync();
+            Equal(expectedOpacity, loaded.OverlayTextBackgroundOpacity); Equal(expectedRadius, loaded.OverlayTextBackgroundCornerRadius);
+        }
+        await File.WriteAllTextAsync(store.FilePath, """{"OverlayTextBackgroundOpacity":-10,"OverlayTextBackgroundCornerRadius":90}""");
+        var bounded = await store.LoadAsync();
+        Equal(0d, bounded.OverlayTextBackgroundOpacity); Equal(40d, bounded.OverlayTextBackgroundCornerRadius);
+    });
+    await Check("Text background color accepts only complete RGB hex colors", async () =>
+    {
+        var store = Store("text-background-color"); await store.LoadAsync();
+        foreach (var color in new string?[] { null, "", "white", "#fff", "#FFFFFFFF", "#12345g", "123456", "#FFFFFF\n", " #FFFFFF" })
+        {
+            await File.WriteAllTextAsync(store.FilePath, JsonSerializer.Serialize(new { OverlayTextBackgroundColor = color }));
+            Equal("#FFFFFF", (await store.LoadAsync()).OverlayTextBackgroundColor);
+        }
+        foreach (var color in new[] { "#000000", "#FFFFFF", "#aBcDeF" })
+        {
+            await store.SaveAsync(new AppSettings { OverlayTextBackgroundColor = color });
+            Equal(color, (await store.LoadAsync()).OverlayTextBackgroundColor);
+        }
+    });
+    await Check("Launcher selection color follows the system by default", async () =>
+    {
+        Equal("auto", new AppSettings().OverlaySelectionColor);
+        Equal("auto", new AppSettings().OverlaySelectionBackgroundColor);
+        var store = Store("selection-color-default"); var initial = await store.LoadAsync();
+        Equal("auto", initial.OverlaySelectionColor); Equal("auto", initial.OverlaySelectionBackgroundColor);
+        await File.WriteAllTextAsync(store.FilePath, """{"OverlayTextColor":"white","OverlayOpacity":72}""");
+        var loaded = await store.LoadAsync(); Equal("auto", loaded.OverlaySelectionColor);
+        Equal("auto", loaded.OverlaySelectionBackgroundColor);
+        Equal("white", loaded.OverlayTextColor); Equal(72d, loaded.OverlayOpacity);
+    });
+    await Check("Launcher selection color persists automatic and custom RGB choices", async () =>
+    {
+        var store = Store("selection-color-persistence");
+        foreach (var color in new[] { "#000000", "#FFFFFF", "#aBcDeF", "auto" })
+        {
+            await store.SaveAsync(new AppSettings { OverlaySelectionColor = color });
+            Equal(color, (await store.LoadAsync()).OverlaySelectionColor);
+        }
+    });
+    await Check("Invalid launcher selection colors fall back to the system accent", async () =>
+    {
+        var store = Store("selection-color-invalid"); await store.LoadAsync();
+        foreach (var color in new string?[] { null, "", "AUTO", "white", "#fff", "#FFFFFFFF", "#12345g", "123456", "#FFFFFF\n", " #FFFFFF", "auto " })
+        {
+            await File.WriteAllTextAsync(store.FilePath, JsonSerializer.Serialize(new { OverlaySelectionColor = color }));
+            Equal("auto", (await store.LoadAsync()).OverlaySelectionColor);
+            var settings = new AppSettings { OverlaySelectionColor = color! }; await store.SaveAsync(settings);
+            Equal("auto", settings.OverlaySelectionColor); Equal("auto", (await store.LoadAsync()).OverlaySelectionColor);
+        }
+    });
+    await Check("Launcher selection fill persists independently of its border color", async () =>
+    {
+        var store = Store("selection-fill-persistence");
+        foreach (var color in new[] { "#000000", "#FFFFFF", "#aBcDeF", "auto" })
+        {
+            await store.SaveAsync(new AppSettings { OverlaySelectionBackgroundColor = color, OverlaySelectionColor = "#123456" });
+            var loaded = await store.LoadAsync(); Equal(color, loaded.OverlaySelectionBackgroundColor);
+            Equal("#123456", loaded.OverlaySelectionColor);
+        }
+    });
+    await Check("Invalid launcher selection fill colors fall back to automatic", async () =>
+    {
+        var store = Store("selection-fill-invalid"); await store.LoadAsync();
+        foreach (var color in new string?[] { null, "", "AUTO", "white", "#fff", "#FFFFFFFF", "#12345g", "123456", "#FFFFFF\n", " #FFFFFF", "auto " })
+        {
+            await File.WriteAllTextAsync(store.FilePath, JsonSerializer.Serialize(new { OverlaySelectionBackgroundColor = color }));
+            Equal("auto", (await store.LoadAsync()).OverlaySelectionBackgroundColor);
+            var settings = new AppSettings { OverlaySelectionBackgroundColor = color! }; await store.SaveAsync(settings);
+            Equal("auto", settings.OverlaySelectionBackgroundColor); Equal("auto", (await store.LoadAsync()).OverlaySelectionBackgroundColor);
+        }
+    });
+    await Check("Appearance reset restores defaults while preserving cached images and all unrelated settings", async () =>
+    {
+        var store = Store("appearance-reset");
+        var directory = Path.Combine(store.DirectoryPath, "backgrounds"); Directory.CreateDirectory(directory);
+        var imagePath = Path.Combine(directory, "background-" + Guid.NewGuid().ToString("N") + ".png");
+        await File.WriteAllBytesAsync(imagePath, png);
+        var installation = Target(); installation.Hotkey = "Ctrl+F2"; installation.ShowInLauncher = false;
+        var settings = new AppSettings
+        {
+            Theme = "dark", OverlayBackgroundStyle = "image", OverlayOpacity = 55, OverlaySolidColor = "#A1B2C3", OverlayTextColor = "white",
+            OverlaySelectionColor = "#123456", OverlaySelectionBackgroundColor = "#654321", OverlayTextBackground = true,
+            OverlayTextBackgroundColor = "#FEDCBA", OverlayTextBackgroundOpacity = 35, OverlayTextBackgroundCornerRadius = 25,
+            OverlayImageBlurEnabled = true, OverlayImageBlur = 17, OverlayCornerRadius = 28, OverlayImagePath = imagePath, OverlayImageName = "custom.png",
+            Language = "ja-JP", OverlayHotkey = "Ctrl+F3", SwitchMode = "instant", WrapSelection = false,
+            StartAtLogin = true, StartInTray = true, CloseToTray = false, AutomaticTerminalSync = true, KeepCurrentJavaSelection = false,
+            SwitchNotifications = false, DiscoveryNotifications = false, RestoreNotifications = false, AutoUpdate = false,
+            LastSelectedId = installation.Id, LastSelectedFingerprint = installation.Fingerprint, ManagedPathEntry = @"C:\ManagedJava\bin", Installations = [installation]
+        };
+        var before = JsonSerializer.SerializeToElement(settings);
+        var defaults = JsonSerializer.SerializeToElement(new AppSettings());
+        void CheckReset(AppSettings actual)
+        {
+            var current = JsonSerializer.SerializeToElement(actual);
+            foreach (var property in before.EnumerateObject())
+            {
+                var appearance = property.Name == nameof(AppSettings.Theme) || property.Name.StartsWith("Overlay", StringComparison.Ordinal)
+                    && property.Name is not (nameof(AppSettings.OverlayHotkey) or nameof(AppSettings.OverlayImagePath) or nameof(AppSettings.OverlayImageName));
+                var expected = appearance ? defaults.GetProperty(property.Name) : property.Value;
+                Equal(expected.GetRawText(), current.GetProperty(property.Name).GetRawText());
+            }
+        }
+        settings.ResetAppearance(); CheckReset(settings);
+        True(ReferenceEquals(installation, settings.Installations[0]));
+        settings.ResetAppearance(); CheckReset(settings);
+        await store.SaveAsync(settings); CheckReset(await store.LoadAsync());
+        True((await File.ReadAllBytesAsync(imagePath)).SequenceEqual(png));
     });
     await Check("Initial locale and atomic manual preference persistence", async () =>
     {

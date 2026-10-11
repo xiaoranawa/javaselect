@@ -480,8 +480,13 @@ public sealed partial class MainWindow : Window
         page.Children.Add(Section(text["theme"])); page.Children.Add(Card(themes));
         page.Children.Add(Section(text["backgroundAndText"]));
         var body = new List<FrameworkElement>();
-        var solidRow = Stack(); var imageRow = Stack();
-        void BackgroundVisibility() { solidRow.Visibility = settings.OverlayBackgroundStyle == "solid" ? Visibility.Visible : Visibility.Collapsed; imageRow.Visibility = settings.OverlayBackgroundStyle == "image" ? Visibility.Visible : Visibility.Collapsed; }
+        var solidRow = Stack(); var imageRow = Stack(); var imageBlurToggleRow = Stack(); var imageBlurRow = Stack();
+        void BackgroundVisibility()
+        {
+            solidRow.Visibility = settings.OverlayBackgroundStyle == "solid" ? Visibility.Visible : Visibility.Collapsed;
+            imageRow.Visibility = imageBlurToggleRow.Visibility = settings.OverlayBackgroundStyle == "image" ? Visibility.Visible : Visibility.Collapsed;
+            imageBlurRow.Visibility = settings.OverlayBackgroundStyle == "image" && settings.OverlayImageBlurEnabled ? Visibility.Visible : Visibility.Collapsed;
+        }
         body.Add(Setting("background", Choice(settings.OverlayBackgroundStyle, [("frosted", "frosted"), ("solid", "solid"), ("image", "image")], async value => { settings.OverlayBackgroundStyle = value; BackgroundVisibility(); await controller.SaveAsync(); })));
         var output = Secondary($"{settings.OverlayOpacity:0}%");
         var slider = new Slider { Minimum = 20, Maximum = 100, StepFrequency = 1, Value = settings.OverlayOpacity, Width = 205 };
@@ -495,7 +500,44 @@ public sealed partial class MainWindow : Window
         };
         AutomationProperties.SetName(radiusSlider, text["cornerRadius"]);
         body.Add(Setting("cornerRadius", Stack(0, radiusOutput, radiusSlider)));
-        var picker = new ColorPicker { IsAlphaEnabled = false, IsColorSliderVisible = false, MaxWidth = 300, Color = ParseColor(settings.OverlaySolidColor) };
+        FrameworkElement SelectionColorSetting(string key, Func<string> read, Action<string> write, Func<Windows.UI.Color> automaticColor)
+        {
+            Windows.UI.Color CurrentColor() => read() == "auto" ? automaticColor() : ParseColor(read());
+            var colorPicker = new ColorPicker { IsAlphaEnabled = false, IsColorSliderVisible = true, MaxWidth = 300, Color = CurrentColor() };
+            var flyout = new Flyout { Content = colorPicker };
+            var swatch = new Border { Width = 24, Height = 18, CornerRadius = new CornerRadius(3), Background = new SolidColorBrush(colorPicker.Color) };
+            var label = Label(read() == "auto" ? text["auto"] : read());
+            var button = new Button { Content = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, Children = { swatch, label } }, Flyout = flyout };
+            AutomationProperties.SetName(button, text[key]);
+            var automatic = new Button { Content = text["auto"], IsEnabled = read() != "auto" };
+            var changed = false;
+            void RefreshColor()
+            {
+                colorPicker.Color = CurrentColor(); swatch.Background = new SolidColorBrush(colorPicker.Color);
+                label.Text = read() == "auto" ? text["auto"] : read(); automatic.IsEnabled = read() != "auto";
+            }
+            flyout.Opened += (_, _) => { RefreshColor(); changed = false; };
+            colorPicker.ColorChanged += (_, args) =>
+            {
+                changed = true; swatch.Background = new SolidColorBrush(args.NewColor);
+                label.Text = $"#{args.NewColor.R:X2}{args.NewColor.G:X2}{args.NewColor.B:X2}";
+            };
+            flyout.Closed += async (_, _) =>
+            {
+                if (!changed) return;
+                write($"#{colorPicker.Color.R:X2}{colorPicker.Color.G:X2}{colorPicker.Color.B:X2}");
+                await Run(controller.SaveAsync); RefreshColor();
+            };
+            automatic.Click += async (_, _) => { write("auto"); await Run(controller.SaveAsync); RefreshColor(); };
+            var actions = new WrapPanel(); actions.Children.Add(button); actions.Children.Add(automatic);
+            return Setting(key, actions);
+        }
+        body.Add(SelectionColorSetting("selectionColor", () => settings.OverlaySelectionColor, value => settings.OverlaySelectionColor = value,
+            () => new Windows.UI.ViewManagement.UISettings().GetColorValue(RootGrid.ActualTheme == ElementTheme.Dark
+                ? Windows.UI.ViewManagement.UIColorType.AccentLight2 : Windows.UI.ViewManagement.UIColorType.AccentDark2)));
+        body.Add(SelectionColorSetting("selectionBackgroundColor", () => settings.OverlaySelectionBackgroundColor, value => settings.OverlaySelectionBackgroundColor = value,
+            () => ParseColor(RootGrid.ActualTheme == ElementTheme.Dark ? "#202124" : "#F7F9FC")));
+        var picker = new ColorPicker { IsAlphaEnabled = false, IsColorSliderVisible = true, MaxWidth = 300, Color = ParseColor(settings.OverlaySolidColor) };
         var colorFlyout = new Flyout { Content = picker }; var colorBox = new Border { Width = 24, Height = 18, CornerRadius = new CornerRadius(3), Background = new SolidColorBrush(picker.Color) };
         var colorButton = new Button { Content = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, Children = { colorBox, Label(settings.OverlaySolidColor) } }, Flyout = colorFlyout };
         picker.ColorChanged += (_, e) => { colorBox.Background = new SolidColorBrush(e.NewColor); ((TextBlock)((StackPanel)colorButton.Content).Children[1]).Text = $"#{e.NewColor.R:x2}{e.NewColor.G:x2}{e.NewColor.B:x2}"; };
@@ -503,10 +545,72 @@ public sealed partial class MainWindow : Window
         solidRow.Children.Add(Setting("backgroundColor", colorButton)); body.Add(solidRow);
         var imageName = Secondary(settings.OverlayImageName ?? text["noImage"]); var imageActions = new WrapPanel();
         imageActions.Children.Add(ActionButton(text["chooseImage"], async () => { await controller.PickBackgroundAsync(WinRT.Interop.WindowNative.GetWindowHandle(this)); imageName.Text = settings.OverlayImageName ?? text["noImage"]; }));
-        imageActions.Children.Add(ActionButton(text["removeImage"], async () => { await controller.RemoveBackgroundAsync(); imageName.Text = text["noImage"]; }));
-        imageRow.Children.Add(Setting("image", Stack(8, imageName, imageActions))); body.Add(imageRow); BackgroundVisibility();
+        imageActions.Children.Add(ActionButton(text["removeImage"], async () => { await controller.RemoveBackgroundAsync(); imageName.Text = text["noImage"]; BackgroundVisibility(); }));
+        imageRow.Children.Add(Setting("image", Stack(8, imageName, imageActions))); body.Add(imageRow);
+        imageBlurToggleRow.Children.Add(Toggle("enableImageBlur", settings.OverlayImageBlurEnabled, value =>
+        {
+            settings.OverlayImageBlurEnabled = value; BackgroundVisibility();
+        }));
+        body.Add(imageBlurToggleRow);
+        var imageBlurOutput = Secondary($"{settings.OverlayImageBlur:0} px");
+        var imageBlurSlider = new Slider { Minimum = 0, Maximum = 30, StepFrequency = 1, Value = settings.OverlayImageBlur, Width = 205 };
+        AutomationProperties.SetName(imageBlurSlider, text["imageBlur"]);
+        imageBlurSlider.ValueChanged += (_, args) =>
+        {
+            settings.OverlayImageBlur = args.NewValue; imageBlurOutput.Text = $"{args.NewValue:0} px"; DebounceSave();
+        };
+        imageBlurRow.Children.Add(Setting("imageBlur", Stack(0, imageBlurOutput, imageBlurSlider))); body.Add(imageBlurRow); BackgroundVisibility();
         body.Add(Setting("textColor", Choice(settings.OverlayTextColor, [("auto", "auto"), ("black", "black"), ("white", "white")], async value => { settings.OverlayTextColor = value; await controller.SaveAsync(); })));
         page.Children.Add(Group(body.ToArray()));
+        page.Children.Add(Section(text["textBackground"]));
+        var textPicker = new ColorPicker { IsAlphaEnabled = false, IsColorSliderVisible = true, MaxWidth = 300, Color = ParseColor(settings.OverlayTextBackgroundColor) };
+        var textColorFlyout = new Flyout { Content = textPicker };
+        var textColorSwatch = new Border { Width = 24, Height = 18, CornerRadius = new CornerRadius(3), Background = new SolidColorBrush(textPicker.Color) };
+        var textColorLabel = Label(settings.OverlayTextBackgroundColor);
+        var textColorButton = new Button { Content = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, Children = { textColorSwatch, textColorLabel } }, Flyout = textColorFlyout };
+        AutomationProperties.SetName(textColorButton, text["textBackgroundColor"]);
+        textPicker.ColorChanged += (_, args) =>
+        {
+            textColorSwatch.Background = new SolidColorBrush(args.NewColor);
+            textColorLabel.Text = $"#{args.NewColor.R:X2}{args.NewColor.G:X2}{args.NewColor.B:X2}";
+        };
+        textColorFlyout.Closed += async (_, _) =>
+        {
+            settings.OverlayTextBackgroundColor = $"#{textPicker.Color.R:X2}{textPicker.Color.G:X2}{textPicker.Color.B:X2}";
+            await Run(controller.SaveAsync);
+        };
+        var textRadiusOutput = Secondary($"{settings.OverlayTextBackgroundCornerRadius:0} px");
+        var textRadiusSlider = new Slider { Minimum = 0, Maximum = 40, StepFrequency = 1, Value = settings.OverlayTextBackgroundCornerRadius, Width = 205 };
+        AutomationProperties.SetName(textRadiusSlider, text["textBackgroundCornerRadius"]);
+        textRadiusSlider.ValueChanged += (_, args) =>
+        {
+            settings.OverlayTextBackgroundCornerRadius = args.NewValue; textRadiusOutput.Text = $"{args.NewValue:0} px"; DebounceSave();
+        };
+        var textTransparencyOutput = Secondary($"{100 - settings.OverlayTextBackgroundOpacity:0}%");
+        var textTransparencySlider = new Slider { Minimum = 0, Maximum = 100, StepFrequency = 1, Value = 100 - settings.OverlayTextBackgroundOpacity, Width = 205 };
+        AutomationProperties.SetName(textTransparencySlider, text["textBackgroundTransparency"]);
+        textTransparencySlider.ValueChanged += (_, args) =>
+        {
+            settings.OverlayTextBackgroundOpacity = 100 - args.NewValue; textTransparencyOutput.Text = $"{args.NewValue:0}%"; DebounceSave();
+        };
+        var textColorRow = Setting("textBackgroundColor", textColorButton);
+        var textRadiusRow = Setting("textBackgroundCornerRadius", Stack(0, textRadiusOutput, textRadiusSlider));
+        var textTransparencyRow = Setting("textBackgroundTransparency", Stack(0, textTransparencyOutput, textTransparencySlider));
+        void TextBackgroundVisibility() => textColorRow.Visibility = textRadiusRow.Visibility = textTransparencyRow.Visibility = settings.OverlayTextBackground ? Visibility.Visible : Visibility.Collapsed;
+        TextBackgroundVisibility();
+        page.Children.Add(Group(Toggle("enableTextBackground", settings.OverlayTextBackground, value => { settings.OverlayTextBackground = value; TextBackgroundVisibility(); }),
+            textColorRow, textRadiusRow, textTransparencyRow));
+        page.Children.Add(ActionButton(text["resetAppearance"], async () =>
+        {
+            appearanceSave?.Stop();
+            try { await controller.ResetAppearanceAsync(); }
+            finally
+            {
+                ApplyTheme(); pages.Remove("appearance");
+                if (currentPage == "appearance") ShowPage("appearance");
+            }
+            ShowStatus(text["appearanceReset"]);
+        }, "\uE777"));
         return page;
     }
     private FrameworkElement Shortcuts()

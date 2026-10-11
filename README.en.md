@@ -4,6 +4,35 @@
 
 A Java version manager for Windows. Switch between installed JDKs and JREs with a keyboard shortcut.
 
+## Screenshots
+
+<img src="docs/images/launcher.en.png" width="480" alt="JavaSelect launcher in English">
+
+<details>
+<summary>More screenshots</summary>
+
+**Home**
+
+![JavaSelect home page in English](docs/images/home.en.png)
+
+**Switch Java**
+
+![JavaSelect version switching page in English](docs/images/switch.en.png)
+
+**Appearance**
+
+![JavaSelect appearance settings in English](docs/images/appearance.en.png)
+
+**Shortcuts**
+
+![JavaSelect shortcut settings in English](docs/images/shortcuts.en.png)
+
+**Custom launcher example (Simplified Chinese interface)**
+
+<img src="docs/images/launcher-custom.zh-CN.png" width="480" alt="Customized JavaSelect launcher in Simplified Chinese">
+
+</details>
+
 ## Download
 
 [Releases](https://github.com/xiaoranawa/javaselect/releases) · [Development builds](https://github.com/xiaoranawa/javaselect/actions/workflows/release.yml)
@@ -16,14 +45,15 @@ For development builds, open a successful Actions run and download its **Artifac
 ## Features
 
 - Scan for Java or add it manually, with aliases, search, vendor filters, and per-version launcher visibility.
-- Open the always-on-top launcher with **Alt+J**, or assign shortcuts to individual versions.
-- System, light, and dark themes, with custom backgrounds, colors, opacity, and rounded corners.
+- Open the always-on-top launcher with a global shortcut, **Alt+J** by default and customizable in settings, or assign shortcuts to individual versions.
+- System, light, and dark themes with custom backgrounds, opacity, and rounded corners. Selection border and fill colors are independently configurable and default to automatic; text backgrounds and image blur are off by default.
+- Reset the default appearance while keeping your Java list, shortcuts, and other settings.
 - Restore the last selected Java, receive Windows notifications, check GitHub updates, and upgrade the installed edition.
 
 ## Quick start
 
 1. Open JavaSelect and scan for Java, or manually add an installation folder.
-2. Press **Alt+J**, choose a version with **↑ / ↓**, then press **Enter**. You can also click a version.
+2. Press your configured global shortcut (**Alt+J** by default), choose a version with **↑ / ↓**, then press **Enter**. You can also click a version.
 3. Open a new terminal to use the selected Java.
 
 Closing the main window keeps JavaSelect in the system tray by default. Shortcuts remain active until you quit the app from the tray. On first launch, the app follows your system language; Simplified Chinese, Traditional Chinese, English, and Japanese are available in settings.

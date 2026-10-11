@@ -48,14 +48,41 @@ public sealed class AppSettings
     public double OverlayOpacity { get; set; } = 94;
     public string OverlaySolidColor { get; set; } = "#f6f7fb";
     public string OverlayTextColor { get; set; } = "auto";
+    public string OverlaySelectionColor { get; set; } = "auto";
+    public string OverlaySelectionBackgroundColor { get; set; } = "auto";
+    public bool OverlayTextBackground { get; set; }
+    public string OverlayTextBackgroundColor { get; set; } = "#FFFFFF";
+    public double OverlayTextBackgroundOpacity { get; set; } = 100;
+    public double OverlayTextBackgroundCornerRadius { get; set; } = 10;
     public string? OverlayImagePath { get; set; }
     public string? OverlayImageName { get; set; }
+    public bool OverlayImageBlurEnabled { get; set; }
+    public double OverlayImageBlur { get; set; } = 5;
     public double OverlayCornerRadius { get; set; } = 10;
     public string? LastSelectedId { get; set; }
     public string? LastSelectedFingerprint { get; set; }
     public string? ManagedPathEntry { get; set; }
     public bool AutoUpdate { get; set; } = true;
     public List<JavaInstallation> Installations { get; set; } = [];
+
+    public void ResetAppearance()
+    {
+        var defaults = new AppSettings();
+        Theme = defaults.Theme;
+        OverlayBackgroundStyle = defaults.OverlayBackgroundStyle;
+        OverlayOpacity = defaults.OverlayOpacity;
+        OverlaySolidColor = defaults.OverlaySolidColor;
+        OverlayTextColor = defaults.OverlayTextColor;
+        OverlaySelectionColor = defaults.OverlaySelectionColor;
+        OverlaySelectionBackgroundColor = defaults.OverlaySelectionBackgroundColor;
+        OverlayTextBackground = defaults.OverlayTextBackground;
+        OverlayTextBackgroundColor = defaults.OverlayTextBackgroundColor;
+        OverlayTextBackgroundOpacity = defaults.OverlayTextBackgroundOpacity;
+        OverlayTextBackgroundCornerRadius = defaults.OverlayTextBackgroundCornerRadius;
+        OverlayImageBlurEnabled = defaults.OverlayImageBlurEnabled;
+        OverlayImageBlur = defaults.OverlayImageBlur;
+        OverlayCornerRadius = defaults.OverlayCornerRadius;
+    }
 }
 
 public sealed record EnvironmentValue(string? Value, bool Exists = true, bool Expandable = false)

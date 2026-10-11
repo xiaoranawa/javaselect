@@ -33,6 +33,7 @@ public sealed class ConfigStore
                 ?? throw new InvalidDataException("The settings file is empty.");
             if (settings.SchemaVersion > 1) throw new InvalidDataException("This settings file requires a newer JavaSelect version.");
             MigrateLegacyCornerRadius(settings, document.RootElement);
+            MigrateLegacyImageBlur(settings, document.RootElement);
             Normalize(settings);
             return settings;
         }
@@ -211,6 +212,19 @@ public sealed class ConfigStore
         if (radius is { } migrated) settings.OverlayCornerRadius = migrated;
     }
 
+    private static void MigrateLegacyImageBlur(AppSettings settings, JsonElement document)
+    {
+        if (settings.OverlayBackgroundStyle != "image") return;
+        JsonElement blur = default;
+        foreach (var property in document.EnumerateObject())
+        {
+            if (property.Name.Equals(nameof(AppSettings.OverlayImageBlurEnabled), StringComparison.OrdinalIgnoreCase)) return;
+            if (property.Name.Equals(nameof(AppSettings.OverlayImageBlur), StringComparison.OrdinalIgnoreCase)) blur = property.Value;
+        }
+        if (blur.ValueKind == JsonValueKind.Number && blur.TryGetDouble(out var radius) && double.IsFinite(radius) && radius > 0)
+            settings.OverlayImageBlurEnabled = true;
+    }
+
     private void Normalize(AppSettings settings)
     {
         settings.Language = LocaleResolver.Resolve(settings.Language);
@@ -218,8 +232,14 @@ public sealed class ConfigStore
         if (settings.SwitchMode is not ("instant" or "confirm")) settings.SwitchMode = "confirm";
         if (settings.OverlayBackgroundStyle is not ("frosted" or "solid" or "image")) settings.OverlayBackgroundStyle = "frosted";
         if (settings.OverlayTextColor is not ("auto" or "black" or "white")) settings.OverlayTextColor = "auto";
+        if (settings.OverlaySelectionColor != "auto" && !Regex.IsMatch(settings.OverlaySelectionColor ?? "", "\\A#[0-9a-fA-F]{6}\\z")) settings.OverlaySelectionColor = "auto";
+        if (settings.OverlaySelectionBackgroundColor != "auto" && !Regex.IsMatch(settings.OverlaySelectionBackgroundColor ?? "", "\\A#[0-9a-fA-F]{6}\\z")) settings.OverlaySelectionBackgroundColor = "auto";
         settings.OverlayOpacity = double.IsFinite(settings.OverlayOpacity) ? Math.Clamp(settings.OverlayOpacity, 20, 100) : 94;
         settings.OverlayCornerRadius = double.IsFinite(settings.OverlayCornerRadius) ? Math.Clamp(settings.OverlayCornerRadius, 0, 40) : 10;
+        settings.OverlayImageBlur = double.IsFinite(settings.OverlayImageBlur) ? Math.Clamp(settings.OverlayImageBlur, 0, 30) : 5;
+        settings.OverlayTextBackgroundOpacity = double.IsFinite(settings.OverlayTextBackgroundOpacity) ? Math.Clamp(settings.OverlayTextBackgroundOpacity, 0, 100) : 100;
+        settings.OverlayTextBackgroundCornerRadius = double.IsFinite(settings.OverlayTextBackgroundCornerRadius) ? Math.Clamp(settings.OverlayTextBackgroundCornerRadius, 0, 40) : 10;
+        if (!Regex.IsMatch(settings.OverlayTextBackgroundColor ?? "", "\\A#[0-9a-fA-F]{6}\\z")) settings.OverlayTextBackgroundColor = "#FFFFFF";
         if (!Regex.IsMatch(settings.OverlaySolidColor ?? "", "^#[0-9a-fA-F]{6}$")) settings.OverlaySolidColor = "#f6f7fb";
         settings.OverlayImagePath = ResolveBackgroundPath(settings.OverlayImagePath);
         if (settings.OverlayImagePath is null) { settings.OverlayImageName = null; if (settings.OverlayBackgroundStyle == "image") settings.OverlayBackgroundStyle = "frosted"; }

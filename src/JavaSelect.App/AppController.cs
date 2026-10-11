@@ -270,6 +270,13 @@ public sealed partial class AppController : IDisposable
         });
     }
 
+    public Task ResetAppearanceAsync() => RunOperationAsync(async () =>
+    {
+        var draft = CloneSettings(committedSettings);
+        draft.ResetAppearance();
+        await SaveCoreAsync(draft, preferences: true);
+    });
+
     public async Task RegisterCurrentHotkeysAsync()
     {
         var bindings = HotkeyBindings(committedSettings);
