@@ -5,3 +5,5 @@
 artifacts/
 *.user
 *.log
+.claude/worktrees/
+.claude/settings.local.json
