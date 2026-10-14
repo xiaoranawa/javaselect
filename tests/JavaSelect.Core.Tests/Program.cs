@@ -812,7 +812,19 @@ finally
 {
     var resolved = Path.GetFullPath(temporaryRoot);
     if (Path.GetDirectoryName(resolved) == Path.GetFullPath(AppContext.BaseDirectory).TrimEnd(Path.DirectorySeparatorChar)
-        && Path.GetFileName(resolved).StartsWith("JavaSelect-tests-", StringComparison.Ordinal)) Directory.Delete(resolved, true);
+        && Path.GetFileName(resolved).StartsWith("JavaSelect-tests-", StringComparison.Ordinal))
+    {
+        // The fake java.exe killed by the timeout test can keep its image locked for a moment after the process ends.
+        for (var attempt = 1; ; attempt++)
+        {
+            try { Directory.Delete(resolved, true); break; }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+            {
+                if (attempt == 40) { Console.WriteLine("WARNING: could not remove " + resolved + ": " + error.Message); break; }
+                await Task.Delay(250);
+            }
+        }
+    }
 }
 Console.WriteLine($"{passed} passed, {failed} failed. No real environment variables were modified.");
 Environment.ExitCode = failed == 0 ? 0 : 1;
