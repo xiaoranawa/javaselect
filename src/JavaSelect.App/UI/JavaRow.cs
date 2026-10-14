@@ -13,7 +13,7 @@ public sealed class JavaRow : INotifyPropertyChanged
 {
     private JavaInstallation java = new();
     private Localizer text = new("zh-CN");
-    private bool selected, protectedSelection;
+    private bool selected, protectedSelection, reorder, canMoveUp, canMoveDown;
     private string? iconPath;
     public string Id => java.Id;
     public JavaInstallation Installation => java;
@@ -25,6 +25,11 @@ public sealed class JavaRow : INotifyPropertyChanged
     public string SwitchLabel => text["use"];
     public string EditLabel => text["edit"];
     public string RemoveLabel => text["remove"];
+    public string MoveUpLabel => text["moveUp"];
+    public string MoveDownLabel => text["moveDown"];
+    public bool CanMoveUp => canMoveUp;
+    public bool CanMoveDown => canMoveDown;
+    public Visibility MoveVisibility => reorder ? Visibility.Visible : Visibility.Collapsed;
     public bool CanSwitch => java.IsValid && !selected;
     public bool CanRemove => !protectedSelection;
     public ImageSource? Icon { get; private set; }
@@ -36,18 +41,25 @@ public sealed class JavaRow : INotifyPropertyChanged
     public ICommand SwitchCommand { get; }
     public ICommand EditCommand { get; }
     public ICommand RemoveCommand { get; }
+    public ICommand MoveUpCommand { get; }
+    public ICommand MoveDownCommand { get; }
     public event PropertyChangedEventHandler? PropertyChanged;
 
-    public JavaRow(bool switching, Func<JavaInstallation, Task> change, Func<JavaInstallation, Task> edit, Func<JavaInstallation, Task> remove)
+    public JavaRow(bool switching, Func<JavaInstallation, Task> change, Func<JavaInstallation, Task> edit, Func<JavaInstallation, Task> remove,
+        Func<JavaInstallation, int, Task> move)
     {
         Switching = switching;
         SwitchCommand = new AsyncCommand(() => change(java));
         EditCommand = new AsyncCommand(() => edit(java));
         RemoveCommand = new AsyncCommand(() => remove(java));
+        MoveUpCommand = new AsyncCommand(() => move(java, -1));
+        MoveDownCommand = new AsyncCommand(() => move(java, 1));
     }
 
-    public void Update(JavaInstallation value, string? current, string? last, Localizer localizer)
+    /// <param name="reorderable">Manual order is active and nothing is filtered, so the move buttons make sense.</param>
+    public void Update(JavaInstallation value, string? current, string? last, Localizer localizer, bool reorderable = false, bool first = false, bool lastInList = false)
     {
+        reorder = reorderable; canMoveUp = reorderable && !first; canMoveDown = reorderable && !lastInList;
         if (iconPath != value.IconPath || Icon is null)
         {
             Icon = !string.IsNullOrEmpty(value.IconPath) && File.Exists(value.IconPath) ? new BitmapImage(new Uri(value.IconPath)) : null;

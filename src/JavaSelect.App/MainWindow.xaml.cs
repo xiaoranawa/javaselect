@@ -155,8 +155,8 @@ public sealed partial class MainWindow : Window
         public bool Switching;
         public string Query = "", Vendor = "";
         public ObservableCollection<JavaRow> Rows = [];
-        public ComboBox VendorBox = new();
-        public TextBlock Count = new(), Empty = new();
+        public ComboBox VendorBox = new(), SortBox = new();
+        public TextBlock Count = new(), Empty = new(), OrderHint = new();
         public bool Updating;
     }
     private FrameworkElement Versions(bool switching)
@@ -187,15 +187,34 @@ public sealed partial class MainWindow : Window
         AutomationProperties.SetName(search, text["search"]); search.TextChanged += (_, args) => { if (args.Reason == AutoSuggestionBoxTextChangeReason.UserInput) { state.Query = search.Text; RefreshVersions(state); } };
         state.VendorBox.MinWidth = 126; state.VendorBox.MaxWidth = 165; AutomationProperties.SetName(state.VendorBox, text["vendors"]);
         state.VendorBox.SelectionChanged += (_, _) => { if (!state.Updating && state.VendorBox.SelectedItem is ComboBoxItem item) { state.Vendor = (string)item.Tag; RefreshVersions(state); } };
-        var filters = new WrapPanel { HorizontalAlignment = HorizontalAlignment.Right }; filters.Children.Add(state.VendorBox); filters.Children.Add(search);
-        page.Children.Add(Pair(heading, filters, 740));
+        state.SortBox.MinWidth = 190; AutomationProperties.SetName(state.SortBox, text["sortBy"]);
+        foreach (var mode in InstallationOrder.Modes) state.SortBox.Items.Add(new ComboBoxItem { Content = text[SortLabel(mode)], Tag = mode });
+        state.SortBox.SelectionChanged += async (_, _) =>
+        {
+            if (state.Updating || state.SortBox.SelectedItem is not ComboBoxItem { Tag: string mode } || mode == controller.Settings.SortMode) return;
+            await Run(async () => { controller.Settings.SortMode = mode; await controller.SaveAsync(); });
+        };
+        var filters = new WrapPanel { HorizontalAlignment = HorizontalAlignment.Right };
+        if (!switching) filters.Children.Add(state.SortBox);
+        filters.Children.Add(state.VendorBox); filters.Children.Add(search);
+        page.Children.Add(Pair(heading, filters, switching ? 740 : 980));
+        state.OrderHint.Style = (Style)RootGrid.Resources["SecondaryText"]; state.OrderHint.Text = text["manualOrderHint"]; state.OrderHint.Visibility = Visibility.Collapsed;
+        page.Children.Add(state.OrderHint);
         state.Empty.Style = (Style)RootGrid.Resources["SecondaryText"]; state.Empty.Margin = new Thickness(16, 24, 16, 24); page.Children.Add(state.Empty);
         page.Children.Add(new ItemsControl { ItemsSource = state.Rows, ItemTemplate = (DataTemplate)RootGrid.Resources["JavaRowTemplate"] });
         RefreshVersions(state); return page;
     }
+    private static string SortLabel(string mode) => mode switch { "versionAsc" => "sortVersionAsc", "name" => "sortName", InstallationOrder.Manual => "sortManual", _ => "sortVersionDesc" };
     private void RefreshVersions(VersionList state)
     {
-        var installations = controller.Settings.Installations;
+        var installations = controller.OrderedInstallations;
+        var sortMode = InstallationOrder.Normalize(controller.Settings.SortMode);
+        if (state.SortBox.SelectedItem is not ComboBoxItem { Tag: string shownMode } || shownMode != sortMode)
+        {
+            state.Updating = true;
+            state.SortBox.SelectedItem = state.SortBox.Items.OfType<ComboBoxItem>().First(x => (string)x.Tag == sortMode);
+            state.Updating = false;
+        }
         string Vendor(JavaInstallation java) => string.IsNullOrWhiteSpace(java.Vendor) ? text["unknownVendor"] : java.Vendor.Trim();
         var vendors = installations.Where(x => x.IsValid).Select(Vendor).Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.CurrentCultureIgnoreCase).ToList();
         if (state.Vendor != "" && !vendors.Contains(state.Vendor, StringComparer.OrdinalIgnoreCase)) state.Vendor = "";
@@ -207,17 +226,26 @@ public sealed partial class MainWindow : Window
             state.VendorBox.SelectedItem = state.VendorBox.Items.OfType<ComboBoxItem>().First(x => (string)x.Tag == state.Vendor); state.Updating = false;
         }
         var terms = Normalize(state.Query).Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var filtered = terms.Length > 0 || state.Vendor != "";
+        // Moving a row only makes sense against the full list, so the buttons wait until no filter is active.
+        var reorderable = !state.Switching && controller.IsManualOrder && !filtered;
+        state.OrderHint.Visibility = !state.Switching && controller.IsManualOrder && filtered ? Visibility.Visible : Visibility.Collapsed;
         var found = installations.Where(x => (state.Vendor == "" || string.Equals(Vendor(x), state.Vendor, StringComparison.OrdinalIgnoreCase))
             && terms.All(t => Normalize($"{x.DisplayName} {x.Version} {x.Vendor} {x.Path} Java{x.MajorVersion} Java {x.MajorVersion} {x.Kind}{x.MajorVersion}").Contains(t))).ToList();
         for (var i = state.Rows.Count - 1; i >= 0; i--) if (!found.Any(x => x.Id == state.Rows[i].Id)) state.Rows.RemoveAt(i);
         for (var i = 0; i < found.Count; i++)
         {
             var java = found[i]; var row = state.Rows.FirstOrDefault(x => x.Id == java.Id);
-            if (row is null) { row = new JavaRow(state.Switching, value => Run(() => controller.SwitchAsync(value.Id)), value => Run(() => Edit(value)), value => Run(() => Remove(value))); state.Rows.Insert(i, row); }
+            if (row is null)
+            {
+                row = new JavaRow(state.Switching, value => Run(() => controller.SwitchAsync(value.Id)), value => Run(() => Edit(value)), value => Run(() => Remove(value)),
+                    (value, offset) => Run(() => controller.MoveInstallationAsync(value.Id, offset)));
+                state.Rows.Insert(i, row);
+            }
             else if (state.Rows.IndexOf(row) != i) state.Rows.Move(state.Rows.IndexOf(row), i);
-            row.Update(java, controller.CurrentSelectedId, controller.Settings.LastSelectedId, text);
+            row.Update(java, controller.CurrentSelectedId, controller.Settings.LastSelectedId, text, reorderable, i == 0, i == found.Count - 1);
         }
-        state.Count.Text = terms.Length > 0 || state.Vendor != "" ? $"{found.Count} / {installations.Count}" : installations.Count.ToString();
+        state.Count.Text = filtered ? $"{found.Count} / {installations.Count}" : installations.Count.ToString();
         state.Empty.Text = text[installations.Count == 0 ? "noVersions" : "noMatches"]; state.Empty.Visibility = found.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
     }
     private void RefreshData()
@@ -642,7 +670,7 @@ public sealed partial class MainWindow : Window
     private void RefreshShortcuts()
     {
         if (shortcutRows is null) return;
-        var versions = controller.Settings.Installations; var pagesCount = Math.Max(1, (versions.Count + 2) / 3); shortcutPage = Math.Clamp(shortcutPage, 0, pagesCount - 1);
+        var versions = controller.OrderedInstallations; var pagesCount = Math.Max(1, (versions.Count + 2) / 3); shortcutPage = Math.Clamp(shortcutPage, 0, pagesCount - 1);
         shortcutRows.Children.Clear();
         foreach (var java in versions.Skip(shortcutPage * 3).Take(3))
             shortcutRows.Children.Add(Card(Pair(Stack(4, Label(java.DisplayName, 15, true), Secondary(java.Path)), Hotkey(java.Hotkey, value => SaveString(() => java.Hotkey, v => java.Hotkey = v, value)), 700)));

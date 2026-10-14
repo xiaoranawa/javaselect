@@ -63,7 +63,7 @@ internal static class ElevationService
         try
         {
             using var process = Process.Start(start) ?? throw new IOException("Administrator startup failed.");
-            if (command.Contains("--quit-for-update") || command.Contains("--remove-startup"))
+            if (WaitsForElevatedChild(command))
             {
                 await process.WaitForExitAsync();
                 Environment.ExitCode = process.ExitCode;
@@ -75,6 +75,10 @@ internal static class ElevationService
 
     internal static bool BypassesElevation(IEnumerable<string> arguments) => arguments.Any(value =>
         value is "--smoke" or "--notification-host" || value.StartsWith("----AppNotificationActivated:", StringComparison.Ordinal));
+
+    /// <summary>Maintenance commands run by Setup: the unelevated stub must wait for the elevated child and return its exit code.</summary>
+    internal static bool WaitsForElevatedChild(IEnumerable<string> arguments) => arguments.Any(value =>
+        value is "--quit-for-update" or "--remove-startup" or "--enable-startup");
 
     internal static void ValidateAccount(IReadOnlyList<string> command, string actualSid)
     {

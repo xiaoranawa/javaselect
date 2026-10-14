@@ -23,6 +23,9 @@ public sealed partial class LauncherWindow : Window
     private readonly AppController controller;
     private readonly nint hwnd;
     private bool showing, exiting;
+    private long shownAt;
+    // A press this soon after the window appeared is an impatient repeat (or a queued one), not a request to hide it again.
+    private const long RepeatPressWindowMs = 500;
     private Task<bool>? pendingSwitch;
     private string? pendingTarget;
     private int presentationVersion;
@@ -62,7 +65,15 @@ public sealed partial class LauncherWindow : Window
         var round = 1; _ = DwmSetWindowAttribute(hwnd, 33, ref round, sizeof(int));
         var noBorder = unchecked((int)0xfffffffe); _ = DwmSetWindowAttribute(hwnd, 34, ref noBorder, sizeof(int));
     }
-    public void Toggle() { if (showing) Dismiss(); else ShowLauncher(); }
+    public void Toggle()
+    {
+        if (!showing) { ShowLauncher(); return; }
+        if (Environment.TickCount64 - shownAt < RepeatPressWindowMs) return;
+        if (GetForegroundWindow() == hwnd) { Dismiss(); return; }
+        // Visible but never got the focus (for example while the Start menu is open): try once more, and hide it if Windows still refuses.
+        SetForegroundWindow(hwnd);
+        if (GetForegroundWindow() != hwnd) Dismiss();
+    }
     public void ShowLauncher()
     {
         presentationVersion++;
@@ -81,6 +92,7 @@ public sealed partial class LauncherWindow : Window
             controller.Settings.OverlayImageBlurEnabled ? controller.Settings.OverlayImageBlur * scale * imageScale : 0);
         controller.BeginOverlay(); showing = true;
         AppWindow.Show(); Activate(); SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x43); SetForegroundWindow(hwnd);
+        shownAt = Environment.TickCount64;
         QueueSelectedScroll(focus: true);
     }
     private void Refresh()
@@ -140,7 +152,7 @@ public sealed partial class LauncherWindow : Window
         Heading.Text = controller.Text("切换 Java", "Switch Java", "切換 Java", "Java を切り替え"); ShortcutLabel.Text = settings.OverlayHotkey.Replace("+", " + ");
         Hint.Text = settings.SwitchMode == "instant" ? controller.Text("↑ ↓ 切换 · Enter 关闭", "↑ ↓ Switch · Enter Close", "↑ ↓ 切換 · Enter 關閉", "↑ ↓ 切り替え · Enter 閉じる") : controller.Text("↑ ↓ 选择 · Enter 确认", "↑ ↓ Select · Enter Apply", "↑ ↓ 選擇 · Enter 確認", "↑ ↓ 選択 · Enter 決定");
         EscapeHint.Text = controller.Text("Esc 关闭", "Esc Close", "Esc 關閉", "Esc 閉じる");
-        var installations = settings.Installations.Where(x => x.IsValid && x.ShowInLauncher).ToList();
+        var installations = controller.OrderedInstallations.Where(x => x.IsValid && x.ShowInLauncher).ToList();
         var ids = installations.Select(x => x.Id).ToHashSet();
         foreach (var id in launcherRows.Keys.Where(id => !ids.Contains(id)).ToArray())
         {

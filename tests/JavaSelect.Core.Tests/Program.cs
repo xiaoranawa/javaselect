@@ -75,12 +75,60 @@ try
         Equal(2, InstallationFilter.GetVendors(items).Count); Equal(1, InstallationFilter.GetVendors(items.Take(1)).Count); Equal(0, InstallationFilter.Filter(items, "*").Count());
         return Task.CompletedTask;
     });
+    await Check("Version ordering ranks newest first, compares patch levels, and sinks unavailable entries", () =>
+    {
+        JavaInstallation J(string id, int major, string version, string kind = "JDK", string vendor = "Oracle", bool valid = true, string path = "", string alias = "")
+            => new() { Id = id, MajorVersion = major, Version = version, Kind = kind, Vendor = vendor, IsValid = valid, Path = path == "" ? @"C:\" + id : path, Alias = alias };
+        JavaInstallation[] items = [J("a", 8, "1.8.0_202"), J("b", 21, "21.0.5"), J("c", 17, "17.0.12"), J("d", 21, "21.0.10"), J("e", 27, "27"), J("f", 8, "1.8.0_392"), J("g", 25, "25", valid: false)];
+        string Ids(IEnumerable<JavaInstallation> source, string mode) => string.Join(",", InstallationOrder.Sort(source, mode, CultureInfo.InvariantCulture).Select(x => x.Id));
+        Equal("e,d,b,c,f,a,g", Ids(items, "versionDesc"));
+        Equal("a,f,c,b,d,e,g", Ids(items, "versionAsc"));
+        Equal("a,b,c,d,e,f,g", Ids(items, "manual")); Equal("a,b,c,d,e,f,g", Ids(items, "unrecognized"));
+        JavaInstallation[] ties = [J("jre", 21, "21.0.5", "JRE"), J("jdk-z", 21, "21.0.5", vendor: "Zulu"), J("jdk-a", 21, "21.0.5", vendor: "Amazon Corretto"), J("jdk-a2", 21, "21.0.5", vendor: "Amazon Corretto", path: @"C:\Z")];
+        Equal("jdk-a,jdk-a2,jdk-z,jre", Ids(ties, "versionDesc"));
+        Equal("jdk-a,jdk-a2,jdk-z,jre", Ids(ties.Reverse(), "versionDesc"));
+        JavaInstallation[] same = [J("first", 21, "21.0.5", path: @"C:\same"), J("second", 21, "21.0.5", path: @"C:\same")];
+        Equal("first,second", Ids(same, "versionDesc")); Equal("second,first", Ids(same.Reverse(), "versionDesc"));
+        Equal("e,d,b,c,f,a,g", Ids(Ids(items, "versionDesc").Split(',').Select(id => items.First(x => x.Id == id)), "versionDesc"));
+        JavaInstallation[] names = [J("x21", 21, "21.0.5"), J("x8", 8, "1.8.0_202"), J("x17", 17, "17.0.12"), J("al", 21, "21.0.5", alias: "Android"), J("jre21", 21, "21.0.5", "JRE")];
+        Equal("al,x8,x17,x21,jre21", Ids(names, "name"));
+        Equal(0, InstallationOrder.Sort([], "versionDesc").Count);
+        return Task.CompletedTask;
+    });
+    await Check("Sort mode defaults to newest first, normalizes unknown values, and keeps manual order across saves", async () =>
+    {
+        Equal("versionDesc", new AppSettings().SortMode);
+        var store = Store("sort-mode"); var settings = await store.LoadAsync();
+        Equal("versionDesc", settings.SortMode);
+        await File.WriteAllTextAsync(store.FilePath, """{"SortMode":"sideways"}"""); Equal("versionDesc", (await store.LoadAsync()).SortMode);
+        await File.WriteAllTextAsync(store.FilePath, """{"Language":"ja-JP"}"""); Equal("versionDesc", (await store.LoadAsync()).SortMode);
+        settings = await store.LoadAsync(); settings.SortMode = "manual";
+        settings.Installations = [new() { Id = "second", MajorVersion = 17 }, new() { Id = "first", MajorVersion = 21 }];
+        await store.SaveAsync(settings);
+        var loaded = await store.LoadAsync();
+        Equal("manual", loaded.SortMode); Equal("second,first", string.Join(",", loaded.Installations.Select(x => x.Id)));
+        foreach (var mode in InstallationOrder.Modes) Equal(mode, InstallationOrder.Normalize(mode));
+        Equal("versionDesc", InstallationOrder.Normalize(null)); Equal("versionDesc", InstallationOrder.Normalize("MANUAL"));
+    });
     await Check("Shortcut parser rejects duplicate and missing modifiers", () =>
     {
         True(HotkeyGesture.TryParse("Alt+J", out var key)); Equal(1u, key!.Modifiers); Equal((uint)'J', key.VirtualKey);
         True(HotkeyGesture.TryParse("Ctrl+F24", out key)); Equal(0x87u, key!.VirtualKey);
         True(!HotkeyGesture.TryParse("Alt++J", out _)); True(!HotkeyGesture.TryParse("Alt+Alt+J", out _)); True(!HotkeyGesture.TryParse("J", out _));
         return Task.CompletedTask;
+    });
+    await Check("Saving settings rides out a brief lock on the existing file", async () =>
+    {
+        var store = Store("save-lock"); var settings = await store.LoadAsync();
+        settings.OverlayOpacity = 61;
+        var held = new FileStream(store.FilePath, FileMode.Open, FileAccess.Read, FileShare.None);
+        var release = Task.Run(async () => { await Task.Delay(180); held.Dispose(); });
+        await store.SaveAsync(settings); await release;
+        Equal(61d, (await store.LoadAsync()).OverlayOpacity);
+        var stuck = new FileStream(store.FilePath, FileMode.Open, FileAccess.Read, FileShare.None);
+        try { await Throws<IOException>(() => store.SaveAsync(settings)); }
+        finally { stuck.Dispose(); }
+        Equal(61d, (await store.LoadAsync()).OverlayOpacity);
     });
     await Check("Native launcher radius defaults to ten and persists independently", async () =>
     {

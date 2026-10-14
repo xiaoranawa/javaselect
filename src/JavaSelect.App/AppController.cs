@@ -91,10 +91,16 @@ public sealed partial class AppController : IDisposable
         committedSettings = CloneSettings(Settings);
         if (!IsReadOnly)
         {
+            var startup = new StartupService();
+            try { await Task.Run(() => startup.ReconcileAtLaunch(Settings.StartAtLogin, Environment.ProcessPath!)); }
+            catch (Exception error)
+            {
+                Log(error);
+                SetStatus(Text($"无法应用开机启动设置：{error.Message}", $"Could not apply the start-at-sign-in setting: {error.Message}",
+                    $"無法套用開機啟動設定：{error.Message}", $"自動起動の設定を適用できません：{error.Message}"));
+            }
             try
             {
-                var startup = new StartupService();
-                await Task.Run(() => startup.MigrateLegacyIfEnabled(Settings.StartAtLogin, Environment.ProcessPath!));
                 startupApplied = await Task.Run(() => startup.IsEnabled(Environment.ProcessPath!));
                 startupStateKnown = true;
             }
@@ -284,9 +290,28 @@ public sealed partial class AppController : IDisposable
         {
             var draft = CloneSettings(committedSettings);
             CopyPreferences(requested, baseline, draft);
+            // Switching to manual starts from the order the user was just looking at.
+            if (draft.SortMode == InstallationOrder.Manual && committedSettings.SortMode != InstallationOrder.Manual)
+                draft.Installations = InstallationOrder.Sort(draft.Installations, committedSettings.SortMode).ToList();
             await SaveCoreAsync(draft, preferences: true);
         });
     }
+
+    /// <summary>Installations in the order chosen by <see cref="AppSettings.SortMode"/>; use this for every list the user sees.</summary>
+    public IReadOnlyList<JavaInstallation> OrderedInstallations => InstallationOrder.Sort(Settings.Installations, Settings.SortMode);
+    public bool IsManualOrder => Settings.SortMode == InstallationOrder.Manual;
+
+    /// <summary>Moves one installation up (-1) or down (+1) in the manual order.</summary>
+    public Task MoveInstallationAsync(string id, int offset) => RunOperationAsync(async () =>
+    {
+        if (committedSettings.SortMode != InstallationOrder.Manual) return;
+        var draft = CloneSettings(committedSettings);
+        var index = draft.Installations.FindIndex(x => x.Id == id);
+        var target = index + Math.Sign(offset);
+        if (index < 0 || target < 0 || target >= draft.Installations.Count || offset == 0) return;
+        (draft.Installations[index], draft.Installations[target]) = (draft.Installations[target], draft.Installations[index]);
+        await SaveCoreAsync(draft, preferences: false);
+    });
 
     public Task ResetAppearanceAsync() => RunOperationAsync(async () =>
     {
@@ -314,10 +339,12 @@ public sealed partial class AppController : IDisposable
             {
                 await RegisterHotkeysAsync(bindings); appliedHotkeys = bindings; hotkeysChanged = true;
             }
-            if (!IsReadOnly && (draft.StartAtLogin != committedSettings.StartAtLogin || startupStateKnown && draft.StartAtLogin != startupApplied))
+            // Only the toggle itself may take startup over from another installation; re-syncing during unrelated saves must not.
+            var startupChoice = draft.StartAtLogin != committedSettings.StartAtLogin;
+            if (!IsReadOnly && (startupChoice || startupStateKnown && draft.StartAtLogin != startupApplied))
             {
                 startupAttempted = true;
-                await Task.Run(() => new StartupService().SetEnabled(draft.StartAtLogin, Environment.ProcessPath!)); startupApplied = draft.StartAtLogin; startupStateKnown = true;
+                await Task.Run(() => new StartupService().SetEnabled(draft.StartAtLogin, Environment.ProcessPath!, takeOver: startupChoice)); startupApplied = draft.StartAtLogin; startupStateKnown = true;
             }
             if (!IsReadOnly && draft.AutomaticTerminalSync != terminalApplied)
             {
@@ -332,7 +359,7 @@ public sealed partial class AppController : IDisposable
             var failures = new List<Exception> { original };
             try { if (terminalAttempted) { await Task.Run(() => TerminalIntegration.SetEnabled(oldTerminal, store.DirectoryPath)); terminalApplied = oldTerminal; } }
             catch (Exception error) { terminalApplied = File.Exists(Path.Combine(store.DirectoryPath, "terminal-sync.enabled")); failures.Add(error); Log(error); }
-            try { if (startupAttempted) { await Task.Run(() => new StartupService().SetEnabled(oldStartup, Environment.ProcessPath!)); startupApplied = oldStartup; } }
+            try { if (startupAttempted) { await Task.Run(() => new StartupService().SetEnabled(oldStartup, Environment.ProcessPath!, takeOver: false)); startupApplied = oldStartup; } }
             catch (Exception error) { failures.Add(error); Log(error); }
             try { if (hotkeysChanged && RegisterHotkeysAsync is not null) { await RegisterHotkeysAsync(oldHotkeys); appliedHotkeys = oldHotkeys; } }
             catch (Exception error) { failures.Add(error); Log(error); }

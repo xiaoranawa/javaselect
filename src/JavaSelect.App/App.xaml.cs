@@ -47,6 +47,12 @@ public partial class App : Application
                 NotificationShortcut.RemoveOwned(Environment.ProcessPath!);
                 Exit(); return;
             }
+            if (command.Contains("--enable-startup"))
+            {
+                if (command.Contains("--smoke")) throw new ArgumentException("Startup changes are unavailable in smoke mode.");
+                Environment.ExitCode = await StartupMaintenance.EnableAsync(Environment.ProcessPath!);
+                Exit(); return;
+            }
             var notificationAction = NotificationCommand.FromArguments(command);
             var smoke = command.Contains("--smoke");
             var directory = smoke ? Path.Combine(AppContext.BaseDirectory, "smoke-config") : null;
@@ -85,7 +91,7 @@ public partial class App : Application
             controller.UpdateInstallRequested += (_, path) => Quit(path);
             hotkeys = new GlobalHotkeyService(action => dispatcher.TryEnqueue(async () =>
             {
-                if (quitting || controller.IsCapturingHotkey) return;
+                if (quitting || RecordingShortcut()) return;
                 try
                 {
                     if (action == "launcher") { launcher ??= new LauncherWindow(controller); launcher.Toggle(); }
@@ -100,6 +106,8 @@ public partial class App : Application
             CreateTray(dispatcher);
             controller.PreferencesChanged += (_, _) => CreateTray(dispatcher);
             _ = ListenAsync(pipeName, dispatcher);
+            // Building the switcher on the first shortcut press made that press slow enough to be repeated, which hid it again.
+            dispatcher.TryEnqueue(DispatcherQueuePriority.Low, () => { if (!quitting) launcher ??= new LauncherWindow(controller); });
             if (notificationAction is { Action: "open" }
                 || (notificationAction is null && !command.Contains("--background") && !controller.Settings.StartInTray)
                 || tray is null) ShowMain();
@@ -170,6 +178,18 @@ public partial class App : Application
             catch (OperationCanceledException) { if (lifetime.IsCancellationRequested) return; }
             catch (IOException error) { controller?.ReportError(error); return; }
         }
+    }
+
+    /// <summary>
+    /// The shortcut recorder swallows global shortcuts only while the main window really is in front; a stale
+    /// "recording" flag (window hidden to the tray, focus lost without a notification) must never silence them.
+    /// </summary>
+    private bool RecordingShortcut()
+    {
+        if (controller is null || !controller.IsCapturingHotkey) return false;
+        if (main is not null && GetForegroundWindow() == WinRT.Interop.WindowNative.GetWindowHandle(main)) return true;
+        controller.IsCapturingHotkey = false;
+        return false;
     }
 
     private void ShowMain()
@@ -250,5 +270,6 @@ public partial class App : Application
     }
 
     [DllImport("user32.dll")] private static extern bool SetForegroundWindow(nint window);
+    [DllImport("user32.dll")] private static extern nint GetForegroundWindow();
     [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "MessageBoxW")] private static extern int MessageBox(nint window, string text, string title, uint type);
 }

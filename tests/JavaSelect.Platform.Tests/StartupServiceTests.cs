@@ -31,6 +31,7 @@ internal static class StartupServiceTests
         check(!StartupService.IsOwnedTask(document.ToString(), path, sid), "Startup rejects tasks with extra executable actions");
         check(!StartupService.IsOwnedTask("<!DOCTYPE Task [<!ENTITY a 'x'>]><Task>&a;</Task>", path, sid), "Startup XML validation refuses DTD input");
         check(StartupService.LegacyCommand(path) == "\"C:\\Apps & Tools\\JavaSelect.exe\" --background", "Legacy startup matching retains the exact quoted executable path");
+        RunWindowsNormalizedTaskChecks(check, path);
         check(ElevationService.BypassesElevation(["JavaSelect.exe", "--smoke"]), "Isolated smoke mode does not prompt for elevation");
         check(ElevationService.BypassesElevation(["JavaSelect.exe", "--notification-host"]), "Notification host stays at ordinary privileges");
         check(ElevationService.BypassesElevation(["JavaSelect.exe", "----AppNotificationActivated:"]), "Cold notification activation stays at ordinary privileges");
@@ -57,6 +58,45 @@ internal static class StartupServiceTests
             && NotificationCommand.Decode("notification|ignore|" + new string('a', 129)) is null,
             "Notification forwarding rejects executable actions, paths, and oversized candidate IDs");
         ValidateTaskSchema(check);
+    }
+
+    /// <summary>
+    /// Task Scheduler rewrites the logon trigger account from the SID it was registered with to DOMAIN\name and drops default
+    /// values such as Enabled=true. Treating that read-back as foreign left the legacy Run entry in place and raised UAC at every sign-in.
+    /// </summary>
+    private static void RunWindowsNormalizedTaskChecks(Action<bool, string> check, string path)
+    {
+        var ns = (XNamespace)"http://schemas.microsoft.com/windows/2004/02/mit/task";
+        var sid = ElevationService.CurrentUserSid();
+        var account = System.Security.Principal.WindowsIdentity.GetCurrent().Name;
+        XDocument Normalized(string executable)
+        {
+            var document = XDocument.Parse(StartupService.BuildTaskXml(executable, sid));
+            document.Descendants(ns + "LogonTrigger").Single().Element(ns + "UserId")!.Value = account;
+            foreach (var enabled in document.Descendants(ns + "Enabled").ToArray()) enabled.Remove();
+            return document;
+        }
+        var normalized = Normalized(path).ToString();
+        check(StartupService.IsOwnedTask(normalized, path, sid, requireEnabledTrigger: true),
+            "A task read back with a DOMAIN\\name trigger account and no default values is still recognized as ours");
+        check(StartupService.Classify(normalized, true, path, sid) == StartupService.TaskKind.Healthy, "A normalized enabled task is healthy");
+        check(StartupService.Classify(normalized, false, path, sid) == StartupService.TaskKind.Disabled, "A task disabled in Task Scheduler is reported disabled, not foreign");
+        var mutated = Normalized(path);
+        mutated.Descendants(ns + "LogonTrigger").Single().Add(new XElement(ns + "Enabled", false));
+        check(StartupService.Classify(mutated.ToString(), true, path, sid) == StartupService.TaskKind.Disabled, "A disabled login trigger is reported disabled");
+        check(!StartupService.IsOwnedTask(normalized.Replace(account, @"BUILTIN\Users"), path, sid), "A trigger account that resolves to a different identity is refused");
+        check(!StartupService.IsOwnedTask(normalized.Replace(account, @"JavaSelectNoSuchDomain\nobody"), path, sid), "A trigger account that cannot be resolved is refused");
+        check(StartupService.SameAccount(sid, sid) && StartupService.SameAccount(account, sid) && !StartupService.SameAccount(null, sid) && !StartupService.SameAccount("", sid),
+            "Account matching accepts a SID or the account name of the same identity only");
+        var elsewhere = @"C:\Elsewhere\JavaSelect.exe";
+        check(StartupService.IsJavaSelectTask(normalized, sid) && !StartupService.IsOwnedTask(normalized, elsewhere, sid), "A JavaSelect task for another folder is recognized but not owned");
+        check(StartupService.Classify(normalized, true, elsewhere, sid) == StartupService.TaskKind.OtherInstall, "Another installation's task is classified separately so it is never silently taken over");
+        check(StartupService.Classify(normalized.Replace("JavaSelect.Startup.v1", "Other app"), true, path, sid) == StartupService.TaskKind.Foreign, "A task with another author is foreign");
+        check(!StartupService.IsJavaSelectTask(Normalized(@"C:\Other\Tool.exe").ToString(), sid), "A startup task running a different program is not treated as JavaSelect's");
+        check(StartupService.Classify(normalized, true, path, "S-1-5-21-100-200-300-1002") == StartupService.TaskKind.Foreign, "Another account's task is foreign");
+        check(ElevationService.WaitsForElevatedChild(["JavaSelect.exe", "--enable-startup"]) && ElevationService.WaitsForElevatedChild(["JavaSelect.exe", "--remove-startup"])
+            && ElevationService.WaitsForElevatedChild(["JavaSelect.exe", "--quit-for-update"]) && !ElevationService.WaitsForElevatedChild(["JavaSelect.exe", "--background"]),
+            "Setup maintenance commands wait for the elevated child; normal launches do not");
     }
 
     private static void ValidateTaskSchema(Action<bool, string> check)

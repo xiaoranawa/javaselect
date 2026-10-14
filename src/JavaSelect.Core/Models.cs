@@ -35,6 +35,7 @@ public sealed class AppSettings
     public string Theme { get; set; } = "system";
     public string OverlayHotkey { get; set; } = "Alt+J";
     public string SwitchMode { get; set; } = "confirm";
+    public string SortMode { get; set; } = InstallationOrder.DefaultMode;
     public bool WrapSelection { get; set; } = true;
     public bool StartAtLogin { get; set; }
     public bool StartInTray { get; set; }

@@ -72,13 +72,27 @@ public sealed class ConfigStore
             token.ThrowIfCancellationRequested();
             EnsureNoReparsePoints(FilePath);
             EnsureNoReparsePoints(temporary);
-            if (File.Exists(FilePath)) File.Replace(temporary, FilePath, null);
+            if (File.Exists(FilePath)) await ReplaceAsync(temporary, token);
             else File.Move(temporary, FilePath);
         }
         finally
         {
             EnsureNoReparsePoints(temporary);
             if (File.Exists(temporary)) File.Delete(temporary);
+        }
+    }
+
+    // Antivirus scanners and indexers briefly lock a settings file, which makes File.Replace fail with "unable to remove the
+    // file to be replaced"; a short bounded retry rides that out and still reports a lock that does not go away.
+    private async Task ReplaceAsync(string temporary, CancellationToken token)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            try { File.Replace(temporary, FilePath, null); return; }
+            catch (IOException error) when (attempt < 6 && error is not (FileNotFoundException or DirectoryNotFoundException))
+            {
+                await Task.Delay(50 * attempt, token);
+            }
         }
     }
 
@@ -230,6 +244,7 @@ public sealed class ConfigStore
         settings.Language = LocaleResolver.Resolve(settings.Language);
         if (settings.Theme is not ("system" or "light" or "dark")) settings.Theme = "system";
         if (settings.SwitchMode is not ("instant" or "confirm")) settings.SwitchMode = "confirm";
+        settings.SortMode = InstallationOrder.Normalize(settings.SortMode);
         if (settings.OverlayBackgroundStyle is not ("frosted" or "solid" or "image")) settings.OverlayBackgroundStyle = "frosted";
         if (settings.OverlayTextColor is not ("auto" or "black" or "white")) settings.OverlayTextColor = "auto";
         if (settings.OverlaySelectionColor != "auto" && !Regex.IsMatch(settings.OverlaySelectionColor ?? "", "\\A#[0-9a-fA-F]{6}\\z")) settings.OverlaySelectionColor = "auto";

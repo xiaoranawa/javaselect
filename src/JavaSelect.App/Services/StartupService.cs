@@ -13,38 +13,56 @@ public sealed class StartupService
 
     private const string TaskAuthor = "JavaSelect.Startup.v1";
     private const string TaskArguments = "--background";
+    private const string ForeignTaskMessage = "The JavaSelect startup task was changed by another program and was left untouched.";
     private static readonly XNamespace Namespace = "http://schemas.microsoft.com/windows/2004/02/mit/task";
+
+    /// <summary>How the per-user startup task relates to one particular JavaSelect.exe.</summary>
+    internal enum TaskKind { Missing, Healthy, Disabled, OtherInstall, Foreign }
 
     public bool IsEnabled(string executablePath)
     {
         var path = ValidatePath(executablePath); var sid = ElevationService.CurrentUserSid();
         using var scheduler = new SchedulerConnection();
-        var task = scheduler.Find(TaskName(sid));
-        return task is not null && (bool)task.Enabled && IsOwnedTask((string)task.Xml, path, sid, requireEnabledTrigger: true);
+        return Classify(scheduler.Read(TaskName(sid)), path, sid) == TaskKind.Healthy;
     }
 
-    public void MigrateLegacyIfEnabled(bool enabled, string executablePath)
+    /// <summary>
+    /// Aligns sign-in startup with the saved preference at launch (the app is already elevated here).
+    /// A leftover HKCU Run value starts an unelevated copy that must raise UAC at every sign-in, so it is always retired.
+    /// </summary>
+    public void ReconcileAtLaunch(bool enabled, string executablePath)
     {
-        if (enabled && HasLegacyEntry(executablePath)) SetEnabled(true, executablePath);
+        var path = ValidatePath(executablePath); var sid = ElevationService.CurrentUserSid();
+        if (enabled)
+        {
+            using var scheduler = new SchedulerConnection();
+            var name = TaskName(sid); var snapshot = scheduler.Read(name);
+            var kind = Classify(snapshot, path, sid);
+            if (kind == TaskKind.Foreign) throw new InvalidOperationException(ForeignTaskMessage);
+            // A live task of another installation stays with that installation; only a missing, disabled or dead one is repaired.
+            if (kind is TaskKind.Missing or TaskKind.Disabled || kind == TaskKind.OtherInstall && !OtherInstallExists(snapshot!.Value.Xml, sid))
+                Register(scheduler, name, path, sid);
+        }
+        RemoveLegacyEntry(path);
     }
 
-    public void SetEnabled(bool enabled, string executablePath)
+    /// <param name="takeOver">Replace a startup task that points at another JavaSelect.exe (explicit user or Setup choice only).</param>
+    public void SetEnabled(bool enabled, string executablePath, bool takeOver = true)
     {
         var path = ValidatePath(executablePath); var sid = ElevationService.CurrentUserSid();
         if (!ElevationService.IsElevated()) throw new UnauthorizedAccessException("Administrator permission is required to change JavaSelect startup.");
         using var scheduler = new SchedulerConnection();
-        var name = TaskName(sid); var existing = scheduler.Find(name);
-        if (existing is not null && !IsOwnedTask((string)existing.Xml, path, sid))
-            throw new InvalidOperationException("The JavaSelect startup task belongs to another executable or has been changed and was left untouched.");
+        var name = TaskName(sid); var snapshot = scheduler.Read(name);
+        var kind = Classify(snapshot, path, sid);
         if (enabled)
         {
+            if (kind == TaskKind.Foreign) throw new InvalidOperationException(ForeignTaskMessage);
             if (!File.Exists(path)) throw new FileNotFoundException("Startup executable was not found.", path);
-            scheduler.Register(name, BuildTaskXml(path, sid), sid);
-            var saved = scheduler.Find(name);
-            if (saved is null || !(bool)saved.Enabled || !IsOwnedTask((string)saved.Xml, path, sid, requireEnabledTrigger: true))
-                throw new IOException("The JavaSelect startup task could not be verified.");
+            // Saving unrelated settings must not take startup away from another installation.
+            if (kind == TaskKind.OtherInstall && !takeOver && OtherInstallExists(snapshot!.Value.Xml, sid)) return;
+            Register(scheduler, name, path, sid);
         }
-        else if (existing is not null) scheduler.Delete(name);
+        else if (kind is TaskKind.Healthy or TaskKind.Disabled) scheduler.Delete(name);
         RemoveLegacyEntry(path);
     }
 
@@ -53,17 +71,28 @@ public sealed class StartupService
         if (!ElevationService.IsElevated()) throw new UnauthorizedAccessException("Administrator permission is required to remove JavaSelect startup.");
         var path = ValidatePath(executablePath); var sid = ElevationService.CurrentUserSid();
         using var scheduler = new SchedulerConnection();
-        var name = TaskName(sid); var existing = scheduler.Find(name);
-        if (existing is not null && IsOwnedTask((string)existing.Xml, path, sid)) scheduler.Delete(name);
+        var name = TaskName(sid);
+        if (Classify(scheduler.Read(name), path, sid) is TaskKind.Healthy or TaskKind.Disabled) scheduler.Delete(name);
         RemoveLegacyEntry(path);
     }
 
-    private static bool HasLegacyEntry(string executablePath)
+    private static void Register(SchedulerConnection scheduler, string name, string path, string sid)
     {
-        using var key = Registry.CurrentUser.OpenSubKey(RunKey);
-        return string.Equals(key?.GetValue(ValueName, null, RegistryValueOptions.DoNotExpandEnvironmentNames) as string,
-            LegacyCommand(executablePath), StringComparison.OrdinalIgnoreCase);
+        scheduler.Register(name, BuildTaskXml(path, sid), sid);
+        if (Classify(scheduler.Read(name), path, sid) != TaskKind.Healthy) throw new IOException("The JavaSelect startup task could not be verified.");
     }
+
+    private static TaskKind Classify((string Xml, bool Enabled)? task, string path, string sid) =>
+        task is { } value ? Classify(value.Xml, value.Enabled, path, sid) : TaskKind.Missing;
+
+    internal static TaskKind Classify(string xml, bool taskEnabled, string path, string sid)
+    {
+        if (IsOwnedTask(xml, path, sid))
+            return taskEnabled && IsOwnedTask(xml, path, sid, requireEnabledTrigger: true) ? TaskKind.Healthy : TaskKind.Disabled;
+        return IsJavaSelectTask(xml, sid) ? TaskKind.OtherInstall : TaskKind.Foreign;
+    }
+
+    private static bool OtherInstallExists(string xml, string sid) => ReadTaskCommand(xml, sid, requireEnabledTrigger: false) is { } command && File.Exists(command);
 
     private static void RemoveLegacyEntry(string path)
     {
@@ -94,32 +123,64 @@ public sealed class StartupService
         return document.ToString(SaveOptions.DisableFormatting);
     }
 
+    /// <summary>The task was written by JavaSelect for this account and launches exactly this executable.</summary>
     internal static bool IsOwnedTask(string xml, string executablePath, string sid, bool requireEnabledTrigger = false)
+    {
+        try { return string.Equals(ReadTaskCommand(xml, sid, requireEnabledTrigger), ValidatePath(executablePath), StringComparison.OrdinalIgnoreCase); }
+        catch (ArgumentException) { return false; }
+    }
+
+    /// <summary>The task was written by JavaSelect for this account, but may point at another JavaSelect.exe.</summary>
+    internal static bool IsJavaSelectTask(string xml, string sid) =>
+        ReadTaskCommand(xml, sid, requireEnabledTrigger: false) is { } command
+        && string.Equals(Path.GetFileName(command), "JavaSelect.exe", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Returns the executable of a structurally exact JavaSelect startup task for <paramref name="sid"/>, otherwise null.</summary>
+    private static string? ReadTaskCommand(string xml, string sid, bool requireEnabledTrigger)
     {
         try
         {
-            var path = ValidatePath(executablePath); ValidateSid(sid);
+            ValidateSid(sid);
             using var input = new StringReader(xml);
             using var reader = XmlReader.Create(input, new XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit, MaxCharactersInDocument = 131072 });
             var task = XDocument.Load(reader).Root;
-            if (task?.Name != Namespace + "Task" || (string?)task.Element(Namespace + "RegistrationInfo")?.Element(Namespace + "Author") != TaskAuthor) return false;
+            if (task?.Name != Namespace + "Task" || (string?)task.Element(Namespace + "RegistrationInfo")?.Element(Namespace + "Author") != TaskAuthor) return null;
             var principals = task.Element(Namespace + "Principals")?.Elements().ToArray();
-            if (principals?.Length != 1) return false;
+            if (principals?.Length != 1) return null;
             var principal = principals[0];
-            if ((string?)principal.Element(Namespace + "UserId") != sid || principal.Element(Namespace + "GroupId") is not null
+            if (!SameAccount((string?)principal.Element(Namespace + "UserId"), sid) || principal.Element(Namespace + "GroupId") is not null
                 || (string?)principal.Element(Namespace + "LogonType") != "InteractiveToken"
-                || (string?)principal.Element(Namespace + "RunLevel") != "HighestAvailable") return false;
+                || (string?)principal.Element(Namespace + "RunLevel") != "HighestAvailable") return null;
             var triggers = task.Element(Namespace + "Triggers")?.Elements().ToArray();
+            // Task Scheduler stores the trigger account as DOMAIN\name even when it was registered with a SID.
             if (triggers?.Length != 1 || triggers[0].Name != Namespace + "LogonTrigger"
-                || (string?)triggers[0].Element(Namespace + "UserId") != sid) return false;
-            if (requireEnabledTrigger && (bool?)triggers[0].Element(Namespace + "Enabled") == false) return false;
+                || !SameAccount((string?)triggers[0].Element(Namespace + "UserId"), sid)) return null;
+            if (requireEnabledTrigger && (bool?)triggers[0].Element(Namespace + "Enabled") == false) return null;
             var actions = task.Element(Namespace + "Actions")?.Elements().ToArray();
-            if (actions?.Length != 1 || actions[0].Name != Namespace + "Exec") return false;
-            return string.Equals((string?)actions[0].Element(Namespace + "Command"), path, StringComparison.OrdinalIgnoreCase)
-                && (string?)actions[0].Element(Namespace + "Arguments") == TaskArguments
-                && string.Equals((string?)actions[0].Element(Namespace + "WorkingDirectory"), Path.GetDirectoryName(path), StringComparison.OrdinalIgnoreCase);
+            if (actions?.Length != 1 || actions[0].Name != Namespace + "Exec") return null;
+            var command = (string?)actions[0].Element(Namespace + "Command");
+            if (string.IsNullOrEmpty(command) || (string?)actions[0].Element(Namespace + "Arguments") != TaskArguments
+                || !string.Equals((string?)actions[0].Element(Namespace + "WorkingDirectory"), Path.GetDirectoryName(command), StringComparison.OrdinalIgnoreCase)) return null;
+            return command;
         }
-        catch (Exception error) when (error is XmlException or ArgumentException or FormatException) { return false; }
+        catch (Exception error) when (error is XmlException or ArgumentException or FormatException) { return null; }
+    }
+
+    /// <summary>True when <paramref name="account"/> (a SID or DOMAIN\name) identifies the account with <paramref name="sid"/>.</summary>
+    internal static bool SameAccount(string? account, string sid)
+    {
+        if (string.IsNullOrWhiteSpace(account)) return false;
+        account = account.Trim();
+        if (string.Equals(account, sid, StringComparison.OrdinalIgnoreCase)) return true;
+        try
+        {
+            using (var identity = WindowsIdentity.GetCurrent())
+                if (identity.User?.Value == sid && string.Equals(account, identity.Name, StringComparison.OrdinalIgnoreCase)) return true;
+            var resolved = account.StartsWith("S-1-", StringComparison.OrdinalIgnoreCase)
+                ? new SecurityIdentifier(account) : (SecurityIdentifier)new NTAccount(account).Translate(typeof(SecurityIdentifier));
+            return string.Equals(resolved.Value, sid, StringComparison.OrdinalIgnoreCase);
+        }
+        catch (SystemException) { return false; }
     }
 
     private static string ValidateSid(string sid)
@@ -149,9 +210,13 @@ public sealed class StartupService
             }
             catch { Dispose(); throw; }
         }
-        internal dynamic? Find(string name)
+        internal (string Xml, bool Enabled)? Read(string name)
         {
-            try { return Track(folder.GetTask(name)); }
+            try
+            {
+                dynamic task = Track(folder.GetTask(name));
+                return ((string)task.Xml, (bool)task.Enabled);
+            }
             catch (Exception error) when (error is COMException or FileNotFoundException && error.HResult == unchecked((int)0x80070002)) { return null; }
         }
         internal void Register(string name, string xml, string sid) => Track(folder.RegisterTask(name, xml, 6, sid, null, 3, null));
