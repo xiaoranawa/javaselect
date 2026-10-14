@@ -1,0 +1,39 @@
+<Project>
+  <!--
+    The self-contained Windows App SDK payload copies WinUI's *.mui resources for ~86 languages next to the
+    executable, which turns the install folder into a wall of locale directories. JavaSelect ships exactly four
+    UI languages, so only those folders are kept. Pruning happens on the build items, before anything is copied,
+    so the build output, the publish output and JavaSelect.deps.json stay consistent with each other.
+
+      -p:PruneWinUILanguages=false          keep every WinUI language folder
+      -p:JavaSelectKeepLanguages=en-us%3Bja-JP   override the kept folders (escape ';' as %3B on the command line)
+  -->
+  <PropertyGroup>
+    <PruneWinUILanguages Condition="'$(PruneWinUILanguages)' == ''">true</PruneWinUILanguages>
+    <JavaSelectKeepLanguages Condition="'$(JavaSelectKeepLanguages)' == ''">en-us;zh-CN;zh-TW;ja-JP</JavaSelectKeepLanguages>
+  </PropertyGroup>
+
+  <Target Name="PruneWinUILanguageResources"
+          AfterTargets="AddMicrosoftWindowsAppSDKPayloadFilesFromComponents"
+          Condition="'$(PruneWinUILanguages)' == 'true' and '$(WindowsAppSDKSelfContained)' == 'true' and '$(DesignTimeBuild)' != 'true'">
+    <PropertyGroup>
+      <!-- (?i): MSBuild cannot pass RegexOptions, and the folder names differ in case across packages (en-us vs zh-CN). -->
+      <_JavaSelectLanguagePattern>(?i)^(?:$(JavaSelectKeepLanguages.Replace(';', '|')))[\\/]</_JavaSelectLanguagePattern>
+    </PropertyGroup>
+    <ItemGroup>
+      <_JavaSelectKeptMui Include="@(None)"
+                          Condition="'%(None.Extension)' == '.mui' and $([System.Text.RegularExpressions.Regex]::IsMatch('%(None.Link)', '$(_JavaSelectLanguagePattern)'))" />
+      <_JavaSelectPrunedMui Include="@(None)"
+                            Condition="'%(None.Extension)' == '.mui' and !$([System.Text.RegularExpressions.Regex]::IsMatch('%(None.Link)', '$(_JavaSelectLanguagePattern)'))" />
+    </ItemGroup>
+    <!-- A typo in JavaSelectKeepLanguages must not silently strip every language. -->
+    <Error Condition="'@(_JavaSelectPrunedMui->Count())' != '0' and '@(_JavaSelectKeptMui->Count())' == '0'"
+           Text="JavaSelectKeepLanguages ($(JavaSelectKeepLanguages)) matches none of the WinUI language folders." />
+    <ItemGroup>
+      <None Remove="@(_JavaSelectPrunedMui)" />
+      <MicrosoftWindowsAppSDKFiles Remove="@(_JavaSelectPrunedMui)" />
+    </ItemGroup>
+    <Message Importance="high"
+             Text="WinUI languages: kept @(_JavaSelectKeptMui->Count()) resource files ($(JavaSelectKeepLanguages)), pruned @(_JavaSelectPrunedMui->Count())." />
+  </Target>
+</Project>

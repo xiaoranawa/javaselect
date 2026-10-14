@@ -2,7 +2,10 @@
 param(
     [switch]$Test,
     [string]$Version,
-    [string]$OutputDirectory = 'artifacts/JavaSelect'
+    [string]$OutputDirectory = 'artifacts/JavaSelect',
+    # Publish without bundling the .NET runtime (the installer flavor). The Windows App SDK stays self-contained, and
+    # the apphost shows Microsoft's standard "install .NET to run this application" dialog when the runtime is missing.
+    [switch]$FrameworkDependent
 )
 
 Set-StrictMode -Version Latest
@@ -120,6 +123,7 @@ $env:MSBuildEnableWorkloadResolver = 'false'
 $env:MSBUILDDISABLENODEREUSE = '1'
 $env:DOTNET_CLI_USE_MSBUILD_SERVER = '0'
 $buildArguments = @('-c', 'Release', "-p:Version=$Version", '-p:UseSharedCompilation=false', '-nodeReuse:false')
+$selfContained = if ($FrameworkDependent) { 'false' } else { 'true' }
 Push-Location $repositoryRoot
 try {
     if ($Test) {
@@ -132,12 +136,12 @@ try {
     }
     Assert-OutputTree $outputPath
     Assert-OutputNotRunning $outputPath
-    & $dotnet publish 'src/JavaSelect.App/JavaSelect.App.csproj' @buildArguments -r win-x64 --self-contained true -o $outputPath
+    & $dotnet publish 'src/JavaSelect.App/JavaSelect.App.csproj' @buildArguments -r win-x64 --self-contained $selfContained -o $outputPath
     if ($LASTEXITCODE -ne 0) { throw 'Application build failed.' }
     Assert-NoReparseAncestor $repairStage
     $null = New-Item -ItemType Directory -Path $repairStage
     $repairStageCreated = $true
-    & $dotnet publish 'src/JavaSelect.Repair/JavaSelect.Repair.csproj' @buildArguments -r win-x64 --self-contained true -o $repairStage
+    & $dotnet publish 'src/JavaSelect.Repair/JavaSelect.Repair.csproj' @buildArguments -r win-x64 --self-contained $selfContained -o $repairStage
     if ($LASTEXITCODE -ne 0) { throw 'Repair component build failed.' }
     Assert-OutputTree $outputPath
     Assert-OutputNotRunning $outputPath
