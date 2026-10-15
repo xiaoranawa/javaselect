@@ -9,7 +9,7 @@ on:
       version:
         description: 'Build version (x.y.z); manual runs only produce artifacts'
         required: true
-        default: '0.1.4'
+        default: '0.1.5'
         type: string
 
 permissions:
