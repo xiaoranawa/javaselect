@@ -47,6 +47,7 @@ For development builds, open a successful Actions run and download its **Artifac
 - Scan for Java or add it manually, with aliases, search, vendor filters, and per-version launcher visibility.
 - Sort the version list automatically (newest first, oldest first, or by name) or manually with move up / move down buttons. The home page, launcher, and shortcut page share one order.
 - Open the always-on-top launcher with a global shortcut, **Alt+J** by default and customizable in settings, or assign shortcuts to individual versions.
+- The launcher opens on the screen with the mouse pointer by default; it can also follow the active window, use the primary screen, or stay on a chosen screen.
 - System, light, and dark themes with custom backgrounds, opacity, and rounded corners. Selection border and fill colors are independently configurable and default to automatic; text backgrounds and image blur are off by default.
 - Reset the default appearance while keeping your Java list, shortcuts, and other settings.
 - Restore the last selected Java, receive Windows notifications, check GitHub updates, and upgrade the installed edition.
