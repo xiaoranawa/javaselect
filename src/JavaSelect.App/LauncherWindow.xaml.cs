@@ -24,11 +24,11 @@ public sealed partial class LauncherWindow : Window
     private readonly nint hwnd;
     private bool showing, exiting;
     private long shownAt;
-    // A press this soon after the window appeared is an impatient repeat (or a queued one), not a request to hide it again.
-    private const long RepeatPressWindowMs = 500;
+    // A press made this soon after the window appeared (or before it did) is an impatient repeat, not a request to hide it again.
+    private const long RepeatPressWindowMs = 150;
     private Task<bool>? pendingSwitch;
     private string? pendingTarget;
-    private int presentationVersion;
+    private int presentationVersion, warmupVersion;
     private readonly Dictionary<string, (string Signature, ListViewItem Item, Border Current, Border Frame, Border Marker,
         TextBlock Title, TextBlock Detail, FontIcon Icon)> launcherRows = [];
     private Brush selectionStroke = new SolidColorBrush(Colors.Black);
@@ -58,17 +58,19 @@ public sealed partial class LauncherWindow : Window
         presenter.IsMaximizable = false; presenter.IsMinimizable = false; presenter.IsAlwaysOnTop = true;
         var style = GetWindowLongPtr(hwnd, -16).ToInt64();
         SetWindowLongPtr(hwnd, -16, (nint)(style & ~0x00C40000L));
-        SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x27);
+        SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x37);
         AppWindow.IsShownInSwitchers = false;
         AppWindow.Closing += (_, args) => { if (!exiting) { args.Cancel = true; Dismiss(); } };
+        controller.PreferencesChanged += OnPreferencesChanged;
         Activated += (_, args) => { if (showing && args.WindowActivationState == WindowActivationState.Deactivated) Dismiss(); };
         var round = 1; _ = DwmSetWindowAttribute(hwnd, 33, ref round, sizeof(int));
         var noBorder = unchecked((int)0xfffffffe); _ = DwmSetWindowAttribute(hwnd, 34, ref noBorder, sizeof(int));
     }
-    public void Toggle()
+    public void Toggle(long arrivedAt = 0)
     {
         if (!showing) { ShowLauncher(); return; }
-        if (Environment.TickCount64 - shownAt < RepeatPressWindowMs) return;
+        // Judge the press by when it was made, not when it was processed, so a slow first show cannot turn into an ignored real press.
+        if ((arrivedAt == 0 ? Environment.TickCount64 : arrivedAt) - shownAt < RepeatPressWindowMs) return;
         if (GetForegroundWindow() == hwnd) { Dismiss(); return; }
         // Visible but never got the focus (for example while the Start menu is open): try once more, and hide it if Windows still refuses.
         SetForegroundWindow(hwnd);
@@ -76,24 +78,102 @@ public sealed partial class LauncherWindow : Window
     }
     public void ShowLauncher()
     {
-        presentationVersion++;
+        warmupVersion++; presentationVersion++;
         Refresh();
-        var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
-        var foregroundWindow = GetForegroundWindow();
-        var monitor = MonitorFromWindow(foregroundWindow, 2); GetMonitorInfo(monitor, ref info);
-        var scale = Math.Max(1, GetDpiForWindow(foregroundWindow == 0 ? hwnd : foregroundWindow) / 96.0);
-        var width = Math.Min(info.Work.Right - info.Work.Left, (int)(480 * scale));
-        var height = Math.Min(info.Work.Bottom - info.Work.Top, (int)((Math.Min(5, Math.Max(1, Versions.Items.Count)) * 68 + 104) * scale));
-        AppWindow.MoveAndResize(new RectInt32(info.Work.Left + (info.Work.Right - info.Work.Left - width) / 2, info.Work.Top + (info.Work.Bottom - info.Work.Top - height) / 2, width, height));
+        var bounds = LauncherBounds(DisplayMonitors.Resolve(controller.Settings.OverlayMonitor), out var scale);
+        Place(bounds);
         UpdateSurfaceBounds();
-        var imageScale = Math.Min(1, 1440d / Math.Max(width, height));
-        RefreshBackgroundImage(controller.Settings.OverlayBackgroundStyle == "image" ? controller.BackgroundPath : null,
-            Math.Max(1, (int)Math.Round(width * imageScale)), Math.Max(1, (int)Math.Round(height * imageScale)),
-            controller.Settings.OverlayImageBlurEnabled ? controller.Settings.OverlayImageBlur * scale * imageScale : 0);
+        ApplyBackground(bounds, scale);
         controller.BeginOverlay(); showing = true;
+        SetCloak(false);
         AppWindow.Show(); Activate(); SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x43); SetForegroundWindow(hwnd);
+        // Keys must work the moment the window is up; the queued call below only moves the focus to the selected row.
+        Versions.Focus(FocusState.Programmatic);
+        if (GetForegroundWindow() != hwnd) RetryForeground(presentationVersion);
         shownAt = Environment.TickCount64;
         QueueSelectedScroll(focus: true);
+    }
+    private RectInt32 LauncherBounds(DisplayMonitor? display, out double scale)
+    {
+        var work = display?.Work ?? DisplayArea.Primary.WorkArea;
+        scale = Math.Max(1, (display?.Dpi ?? 96) / 96.0);
+        var width = Math.Min(work.Width, (int)(480 * scale));
+        var height = Math.Min(work.Height, (int)((Math.Min(5, Math.Max(1, Versions.Items.Count)) * 68 + 104) * scale));
+        return new RectInt32(work.X + (work.Width - width) / 2, work.Y + (work.Height - height) / 2, width, height);
+    }
+    private void Place(RectInt32 bounds)
+    {
+        AppWindow.MoveAndResize(bounds);
+        // Moving onto a screen with a different scale makes Windows rescale the window itself; once the window lives there, the same call lands exactly.
+        if (GetWindowRect(hwnd, out var actual) && (actual.Left != bounds.X || actual.Top != bounds.Y
+            || actual.Right - actual.Left != bounds.Width || actual.Bottom - actual.Top != bounds.Height)) AppWindow.MoveAndResize(bounds);
+    }
+    // The image is decoded and blurred off-thread for the exact size it will be shown at; doing that ahead of time keeps it from popping in after the window.
+    private void ApplyBackground(RectInt32 bounds, double scale)
+    {
+        var imageScale = Math.Min(1, 1440d / Math.Max(bounds.Width, bounds.Height));
+        RefreshBackgroundImage(controller.Settings.OverlayBackgroundStyle == "image" ? controller.BackgroundPath : null,
+            Math.Max(1, (int)Math.Round(bounds.Width * imageScale)), Math.Max(1, (int)Math.Round(bounds.Height * imageScale)),
+            controller.Settings.OverlayImageBlurEnabled ? controller.Settings.OverlayImageBlur * scale * imageScale : 0);
+    }
+    private void OnPreferencesChanged(object? sender, EventArgs args) => DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+    {
+        if (showing || exiting) return;
+        Refresh();
+        ApplyBackground(LauncherBounds(DisplayMonitors.Resolve(controller.Settings.OverlayMonitor), out var scale), scale);
+    });
+    /// <summary>
+    /// Windows sometimes refuses the first activation because the key release is still being delivered to the previous window.
+    /// A few more tries within the next fraction of a second win it (the later ones borrow the old window's input queue, which
+    /// the foreground lock does not apply to); without the focus Esc and Enter would not reach the launcher.
+    /// </summary>
+    private void RetryForeground(int presentation)
+    {
+        var timer = DispatcherQueue.CreateTimer(); var attempts = 0;
+        timer.Interval = TimeSpan.FromMilliseconds(20);
+        timer.Tick += (_, _) =>
+        {
+            if (exiting || !showing || presentation != presentationVersion || ++attempts > 12) { timer.Stop(); return; }
+            if (GetForegroundWindow() != hwnd) { if (attempts > 3) ForceForeground(); else SetForegroundWindow(hwnd); }
+            if (GetForegroundWindow() != hwnd) return;
+            timer.Stop(); Versions.Focus(FocusState.Programmatic);
+        };
+        timer.Start();
+    }
+    private void ForceForeground()
+    {
+        var foreground = GetForegroundWindow();
+        // Never attach to a window that is not pumping messages: attaching would stall this thread with it.
+        var foregroundThread = foreground == 0 || IsHungAppWindow(foreground) ? 0 : GetWindowThreadProcessId(foreground, out _);
+        var thisThread = GetCurrentThreadId();
+        var attached = foregroundThread != 0 && foregroundThread != thisThread && AttachThreadInput(thisThread, foregroundThread, true);
+        try { SetForegroundWindow(hwnd); }
+        finally { if (attached) AttachThreadInput(thisThread, foregroundThread, false); }
+    }
+    private void SetCloak(bool cloaked) { var value = cloaked ? 1 : 0; _ = DwmSetWindowAttribute(hwnd, 13, ref value, sizeof(int)); }
+    /// <summary>
+    /// Builds the list and draws one frame out of sight (cloaked, off every screen, never activated), so the first press does not pay
+    /// for the first layout and composition. Does nothing once the launcher has been shown.
+    /// </summary>
+    public async Task PrewarmAsync()
+    {
+        if (showing || exiting) return;
+        var version = ++warmupVersion;
+        try
+        {
+            Refresh();
+            SetCloak(true);
+            var bounds = LauncherBounds(DisplayMonitors.Resolve(controller.Settings.OverlayMonitor), out var scale);
+            ApplyBackground(bounds, scale);
+            AppWindow.MoveAndResize(new RectInt32(-32000, -32000, bounds.Width, bounds.Height));
+            AppWindow.Show(false);
+            await Task.Delay(300);
+        }
+        catch (Exception error) { System.Diagnostics.Debug.WriteLine(error); }
+        finally
+        {
+            if (version == warmupVersion && !showing && !exiting) { AppWindow.Hide(); SetCloak(false); }
+        }
     }
     private void Refresh()
     {
@@ -392,6 +472,7 @@ public sealed partial class LauncherWindow : Window
     {
         exiting = true; backgroundRequestVersion++; backgroundLoadCancellation?.Cancel(); BackgroundImage.Source = null;
         controller.LauncherSwitchFailed -= ShowSwitchFailure;
+        controller.PreferencesChanged -= OnPreferencesChanged;
         ElementCompositionPreview.GetElementVisual(Root).Clip = null;
         surfaceClip?.Dispose(); surfaceGeometry?.Dispose();
         var transparent = SystemBackdrop as ClearBackdrop;
@@ -401,16 +482,17 @@ public sealed partial class LauncherWindow : Window
     private static bool SystemDark() { using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"); return key?.GetValue("AppsUseLightTheme") is int value && value == 0; }
     private static Color ParseColor(string value) { try { return Color.FromArgb(255, Convert.ToByte(value[1..3], 16), Convert.ToByte(value[3..5], 16), Convert.ToByte(value[5..7], 16)); } catch { return Color.FromArgb(255, 246, 247, 251); } }
     [StructLayout(LayoutKind.Sequential)] private struct Rect { public int Left, Top, Right, Bottom; }
-    [StructLayout(LayoutKind.Sequential)] private struct MonitorInfo { public int Size; public Rect Monitor, Work; public uint Flags; }
     [DllImport("user32.dll")] private static extern nint GetForegroundWindow();
-    [DllImport("user32.dll")] private static extern nint MonitorFromWindow(nint window, uint flags);
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern bool GetMonitorInfo(nint monitor, ref MonitorInfo info);
     [DllImport("user32.dll")] private static extern uint GetDpiForWindow(nint window);
     [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool GetWindowRect(nint window, out Rect bounds);
     [DllImport("user32.dll")] private static extern int SetWindowRgn(nint window, nint region, [MarshalAs(UnmanagedType.Bool)] bool redraw);
     [DllImport("gdi32.dll")] private static extern nint CreateRoundRectRgn(int left, int top, int right, int bottom, int ellipseWidth, int ellipseHeight);
     [DllImport("gdi32.dll")] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool DeleteObject(nint handle);
     [DllImport("user32.dll")] private static extern bool SetForegroundWindow(nint window);
+    [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(nint window, out uint processId);
+    [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool AttachThreadInput(uint attach, uint attachTo, [MarshalAs(UnmanagedType.Bool)] bool attachInput);
+    [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool IsHungAppWindow(nint window);
     [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")] private static extern nint GetWindowLongPtr(nint window, int index);
     [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")] private static extern nint SetWindowLongPtr(nint window, int index, nint value);
     [DllImport("user32.dll")] private static extern bool SetWindowPos(nint window, nint after, int x, int y, int width, int height, uint flags);

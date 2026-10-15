@@ -245,6 +245,7 @@ public sealed class ConfigStore
         if (settings.Theme is not ("system" or "light" or "dark")) settings.Theme = "system";
         if (settings.SwitchMode is not ("instant" or "confirm")) settings.SwitchMode = "confirm";
         settings.SortMode = InstallationOrder.Normalize(settings.SortMode);
+        settings.OverlayMonitor = LauncherMonitorChoice.Normalize(settings.OverlayMonitor);
         if (settings.OverlayBackgroundStyle is not ("frosted" or "solid" or "image")) settings.OverlayBackgroundStyle = "frosted";
         if (settings.OverlayTextColor is not ("auto" or "black" or "white")) settings.OverlayTextColor = "auto";
         if (settings.OverlaySelectionColor != "auto" && !Regex.IsMatch(settings.OverlaySelectionColor ?? "", "\\A#[0-9a-fA-F]{6}\\z")) settings.OverlaySelectionColor = "auto";

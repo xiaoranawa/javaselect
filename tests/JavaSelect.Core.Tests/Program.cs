@@ -110,6 +110,28 @@ try
         foreach (var mode in InstallationOrder.Modes) Equal(mode, InstallationOrder.Normalize(mode));
         Equal("versionDesc", InstallationOrder.Normalize(null)); Equal("versionDesc", InstallationOrder.Normalize("MANUAL"));
     });
+    await Check("Launcher screen choice defaults to the pointer, normalizes unknown values, and falls back when a fixed screen is unplugged", async () =>
+    {
+        Equal("cursor", new AppSettings().OverlayMonitor);
+        foreach (var mode in new[] { "cursor", "active", "primary" }) Equal(mode, LauncherMonitorChoice.Normalize(mode));
+        Equal("cursor", LauncherMonitorChoice.Normalize(null)); Equal("cursor", LauncherMonitorChoice.Normalize("sideways")); Equal("active", LauncherMonitorChoice.Normalize(" ACTIVE "));
+        Equal(@"\\.\DISPLAY2", LauncherMonitorChoice.Normalize(@"\\.\DISPLAY2")); Equal("cursor", LauncherMonitorChoice.Normalize(@"\\.\DISPLAY")); Equal("cursor", LauncherMonitorChoice.Normalize(@"\\.\DISPLAYX1"));
+        IReadOnlyList<(string DeviceName, bool IsPrimary)> screens = [(@"\\.\DISPLAY1", false), (@"\\.\DISPLAY2", true), (@"\\.\DISPLAY3", false)];
+        int Pick(string? choice, int cursor, int active) => LauncherMonitorChoice.Resolve(choice, screens, cursor, active);
+        Equal(2, Pick("cursor", 2, 0)); Equal(0, Pick("active", 2, 0)); Equal(1, Pick("primary", 2, 0));
+        Equal(2, Pick(@"\\.\DISPLAY3", 0, 0)); Equal(2, Pick(@"\\.\display3", 0, 0));
+        Equal(1, Pick(@"\\.\DISPLAY9", 1, 0)); Equal(0, Pick(@"\\.\DISPLAY9", 0, 1)); Equal(1, Pick(@"\\.\DISPLAY9", -1, -1));
+        Equal(1, Pick("cursor", -1, 0)); Equal(2, Pick("active", 2, -1)); Equal(1, Pick("active", -1, -1)); Equal(1, Pick("garbage", 7, 7));
+        Equal(-1, LauncherMonitorChoice.Resolve("cursor", [], 0, 0));
+        var store = Store("launcher-screen"); var settings = await store.LoadAsync();
+        Equal("cursor", settings.OverlayMonitor);
+        await File.WriteAllTextAsync(store.FilePath, """{"OverlayMonitor":"left"}"""); Equal("cursor", (await store.LoadAsync()).OverlayMonitor);
+        await File.WriteAllTextAsync(store.FilePath, """{"Language":"ja-JP"}"""); Equal("cursor", (await store.LoadAsync()).OverlayMonitor);
+        settings = await store.LoadAsync(); settings.OverlayMonitor = @"\\.\DISPLAY2"; await store.SaveAsync(settings);
+        Equal(@"\\.\DISPLAY2", (await store.LoadAsync()).OverlayMonitor);
+        settings = await store.LoadAsync(); settings.OverlayMonitor = "primary"; await store.SaveAsync(settings);
+        Equal("primary", (await store.LoadAsync()).OverlayMonitor);
+    });
     await Check("Shortcut parser rejects duplicate and missing modifiers", () =>
     {
         True(HotkeyGesture.TryParse("Alt+J", out var key)); Equal(1u, key!.Modifiers); Equal((uint)'J', key.VirtualKey);

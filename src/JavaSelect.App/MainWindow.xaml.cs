@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
 using JavaSelect.App.Localization;
+using JavaSelect.App.Services;
 using JavaSelect.App.UI;
 using JavaSelect.Core;
 using Microsoft.UI;
@@ -657,6 +658,7 @@ public sealed partial class MainWindow : Window
         page.Children.Add(Group(
             Setting("globalHotkey", Hotkey(settings.OverlayHotkey, value => SaveString(() => settings.OverlayHotkey, v => settings.OverlayHotkey = v, value), false)),
             Setting("switchMode", Choice(settings.SwitchMode, [("instant", "instant"), ("confirm", "confirm")], async value => { settings.SwitchMode = value; await controller.SaveAsync(); })),
+            Setting("launcherMonitor", MonitorChoice()),
             Toggle("wrap", settings.WrapSelection, value => settings.WrapSelection = value)));
         page.Children.Add(Section(text["directShortcuts"])); shortcutRows = Stack(8);
         shortcutRows.ChildrenTransitions = new TransitionCollection { new EntranceThemeTransition { IsStaggeringEnabled = false } };
@@ -862,6 +864,39 @@ public sealed partial class MainWindow : Window
             var next = string.Join('+', modifiers); await Run(async () => { await save(next); input.Text = next; });
         };
         var row = new WrapPanel(); row.Children.Add(input); if (clear) row.Children.Add(ActionButton(text["clear"], async () => { await save(""); input.Text = ""; })); return row;
+    }
+    private ComboBox MonitorChoice()
+    {
+        var settings = controller.Settings; var combo = new ComboBox { MinWidth = 180, MaxWidth = 300 }; var filling = false;
+        AutomationProperties.SetName(combo, text["launcherMonitor"]);
+        string Label(DisplayMonitor monitor) => $"{text["monitorScreen"]} {(monitor.Number > 0 ? monitor.Number : 1)} · {monitor.Bounds.Width}×{monitor.Bounds.Height}{(monitor.IsPrimary ? " · " + text["monitorPrimaryMark"] : "")}";
+        void Fill()
+        {
+            filling = true;
+            combo.Items.Clear();
+            foreach (var (value, label) in new[] { (LauncherMonitorChoice.Cursor, "monitorCursor"), (LauncherMonitorChoice.ActiveWindow, "monitorActive"), (LauncherMonitorChoice.Primary, "monitorPrimary") })
+                combo.Items.Add(new ComboBoxItem { Content = text[label], Tag = value });
+            foreach (var monitor in DisplayMonitors.All().OrderBy(x => x.Number)) combo.Items.Add(new ComboBoxItem { Content = Label(monitor), Tag = monitor.DeviceName });
+            var current = LauncherMonitorChoice.Normalize(settings.OverlayMonitor);
+            var selected = combo.Items.OfType<ComboBoxItem>().FirstOrDefault(x => string.Equals((string)x.Tag, current, StringComparison.OrdinalIgnoreCase));
+            if (selected is null)
+            {
+                // The saved screen is unplugged right now; keep showing the choice so it is not silently replaced.
+                var number = new string(current.Where(char.IsAsciiDigit).ToArray());
+                selected = new ComboBoxItem { Content = $"{text["monitorScreen"]} {number} ({text["monitorDisconnected"]})", Tag = current }; combo.Items.Add(selected);
+            }
+            combo.SelectedItem = selected; filling = false;
+        }
+        Fill();
+        // Screens come and go while the app runs; look again whenever the list is about to be used.
+        combo.PointerEntered += (_, _) => { if (!combo.IsDropDownOpen) Fill(); };
+        combo.GotFocus += (_, _) => { if (!combo.IsDropDownOpen) Fill(); };
+        combo.SelectionChanged += async (_, _) =>
+        {
+            if (filling || combo.SelectedItem is not ComboBoxItem { Tag: string value } || value == LauncherMonitorChoice.Normalize(settings.OverlayMonitor)) return;
+            await Run(async () => { settings.OverlayMonitor = value; await controller.SaveAsync(); });
+        };
+        return combo;
     }
     private ComboBox Choice(string current, (string Value, string Label)[] values, Func<string, Task> change)
     {

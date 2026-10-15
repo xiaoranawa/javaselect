@@ -89,16 +89,20 @@ public partial class App : Application
             };
             controller.ShowMainRequested += (_, _) => ShowMain();
             controller.UpdateInstallRequested += (_, path) => Quit(path);
-            hotkeys = new GlobalHotkeyService(action => dispatcher.TryEnqueue(async () =>
+            hotkeys = new GlobalHotkeyService(action =>
             {
-                if (quitting || RecordingShortcut()) return;
-                try
+                var pressedAt = Environment.TickCount64;
+                dispatcher.TryEnqueue(async () =>
                 {
-                    if (action == "launcher") { launcher ??= new LauncherWindow(controller); launcher.Toggle(); }
-                    else await controller.SwitchAsync(action);
-                }
-                catch (Exception error) { controller.ReportError(error); ShowMain(); }
-            }));
+                    if (quitting || RecordingShortcut()) return;
+                    try
+                    {
+                        if (action == "launcher") { launcher ??= new LauncherWindow(controller); launcher.Toggle(pressedAt); }
+                        else await controller.SwitchAsync(action);
+                    }
+                    catch (Exception error) { controller.ReportError(error); ShowMain(); }
+                });
+            });
             hotkeys.Error += error => dispatcher.TryEnqueue(() => controller.ReportError(error));
             controller.RegisterHotkeysAsync = bindings => Task.Run(() => hotkeys.Update(bindings));
             try { await controller.RegisterCurrentHotkeysAsync(); }
@@ -107,7 +111,7 @@ public partial class App : Application
             controller.PreferencesChanged += (_, _) => CreateTray(dispatcher);
             _ = ListenAsync(pipeName, dispatcher);
             // Building the switcher on the first shortcut press made that press slow enough to be repeated, which hid it again.
-            dispatcher.TryEnqueue(DispatcherQueuePriority.Low, () => { if (!quitting) launcher ??= new LauncherWindow(controller); });
+            dispatcher.TryEnqueue(DispatcherQueuePriority.Low, () => { if (quitting) return; launcher ??= new LauncherWindow(controller); _ = launcher.PrewarmAsync(); });
             if (notificationAction is { Action: "open" }
                 || (notificationAction is null && !command.Contains("--background") && !controller.Settings.StartInTray)
                 || tray is null) ShowMain();

@@ -122,6 +122,50 @@ public static class InstallationOrder
     }
 }
 
+/// <summary>
+/// Which screen the launcher opens on: where the mouse pointer is (default), where the active window is, the primary screen,
+/// or one fixed screen identified by its Windows device name (for example \\.\DISPLAY2).
+/// </summary>
+public static class LauncherMonitorChoice
+{
+    public const string Cursor = "cursor";
+    public const string ActiveWindow = "active";
+    public const string Primary = "primary";
+    public const string DefaultMode = Cursor;
+
+    public static string Normalize(string? value)
+    {
+        value = (value ?? "").Trim();
+        foreach (var mode in new[] { Cursor, ActiveWindow, Primary })
+            if (value.Equals(mode, StringComparison.OrdinalIgnoreCase)) return mode;
+        return IsDeviceName(value) ? value : DefaultMode;
+    }
+
+    private const string DevicePrefix = @"\\.\DISPLAY";
+
+    public static bool IsDeviceName(string? value) => value is not null && value.StartsWith(DevicePrefix, StringComparison.OrdinalIgnoreCase)
+        && value.Length > DevicePrefix.Length && value.AsSpan(DevicePrefix.Length).IndexOfAnyExceptInRange('0', '9') < 0;
+
+    /// <summary>Picks the screen to use; a fixed screen that is no longer connected falls back to the pointer's screen.</summary>
+    public static int Resolve(string? choice, IReadOnlyList<(string DeviceName, bool IsPrimary)> screens, int cursorIndex, int activeIndex)
+    {
+        if (screens.Count == 0) return -1;
+        int Valid(int index, int fallback) => index >= 0 && index < screens.Count ? index : fallback;
+        var primary = 0;
+        for (var index = 0; index < screens.Count; index++) if (screens[index].IsPrimary) { primary = index; break; }
+        var mode = Normalize(choice);
+        switch (mode)
+        {
+            case Primary: return primary;
+            case ActiveWindow: return Valid(activeIndex, Valid(cursorIndex, primary));
+            case Cursor: return Valid(cursorIndex, primary);
+        }
+        for (var index = 0; index < screens.Count; index++)
+            if (screens[index].DeviceName.Equals(mode, StringComparison.OrdinalIgnoreCase)) return index;
+        return Valid(cursorIndex, primary);
+    }
+}
+
 public sealed record HotkeyGesture(uint Modifiers, uint VirtualKey, string Text)
 {
     public static bool TryParse(string? value, out HotkeyGesture? gesture)
